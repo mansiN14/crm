@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import type { Reminder, Student } from '../../lib/supabase';
+import { getDueStatus } from '../../lib/dateUtils';
+import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import { Search, Bell, Calendar, Clock, CheckCircle, X, Plus, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -12,12 +14,19 @@ export function RemindersPage() {
   const [showModal, setShowModal] = useState(false);
   const [students, setStudents] = useState<Student[]>([]);
 
-  useEffect(() => {
-    fetchReminders();
-    fetchStudents();
-  }, [statusFilter]);
+  const sortReminders = useCallback((items: Reminder[]) =>
+    [...items].sort((first, second) => {
+      const priority = { overdue: 0, today: 1, soon: 2, upcoming: 3 };
+      const firstPriority = priority[getDueStatus(first.reminder_date)];
+      const secondPriority = priority[getDueStatus(second.reminder_date)];
+      if (firstPriority !== secondPriority) return firstPriority - secondPriority;
 
-  const fetchReminders = async () => {
+      const firstValue = `${first.reminder_date || ''} ${first.reminder_time || ''}`;
+      const secondValue = `${second.reminder_date || ''} ${second.reminder_time || ''}`;
+      return firstValue.localeCompare(secondValue);
+    }), []);
+
+  const fetchReminders = useCallback(async () => {
     try {
       let query = supabase
         .from<Reminder[]>('reminders')
@@ -36,19 +45,17 @@ export function RemindersPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [sortReminders, statusFilter]);
 
-  const fetchStudents = async () => {
+  const fetchStudents = useCallback(async () => {
     const { data } = await supabase.from('students').select('*');
     setStudents(data || []);
-  };
+  }, []);
 
-  const sortReminders = (items: Reminder[]) =>
-    [...items].sort((first, second) => {
-      const firstValue = `${first.reminder_date || ''} ${first.reminder_time || ''}`;
-      const secondValue = `${second.reminder_date || ''} ${second.reminder_time || ''}`;
-      return firstValue.localeCompare(secondValue);
-    });
+  useEffect(() => {
+    fetchReminders();
+    fetchStudents();
+  }, [fetchReminders, fetchStudents]);
 
   const filteredReminders = reminders.filter((reminder) =>
     reminder.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -61,11 +68,7 @@ export function RemindersPage() {
   };
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <div className="w-12 h-12 border-4 border-navy-200 border-t-maroon-600 rounded-full animate-spin" />
-      </div>
-    );
+    return <LoadingSpinner />;
   }
 
   return (
@@ -116,10 +119,18 @@ export function RemindersPage() {
             <p className="text-gray-500">No reminders found</p>
           </div>
         ) : (
-          filteredReminders.map((reminder) => (
+          filteredReminders.map((reminder) => {
+            const dueStatus = getDueStatus(reminder.reminder_date);
+            return (
             <article
               key={reminder.id}
-              className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+              className={`rounded-xl border p-6 shadow-sm ${
+                dueStatus === 'overdue'
+                  ? 'border-red-200 bg-red-50'
+                  : dueStatus === 'today'
+                    ? 'border-yellow-200 bg-yellow-50'
+                    : 'border-gray-200 bg-white'
+              }`}
             >
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="flex min-w-0 items-start gap-4">
@@ -173,6 +184,9 @@ export function RemindersPage() {
                     {reminder.reminder_type.replace('_', ' ')}
                   </span>
                   {reminder.status === 'pending' && (
+                    <DueStatusBadge status={dueStatus} />
+                  )}
+                  {reminder.status === 'pending' && (
                     <>
                       <button
                         onClick={() => handleStatusChange(reminder.id, 'completed')}
@@ -193,7 +207,8 @@ export function RemindersPage() {
                 </div>
               </div>
             </article>
-          ))
+          );
+          })
         )}
       </div>
 
@@ -208,6 +223,28 @@ export function RemindersPage() {
         />
       )}
     </div>
+  );
+}
+
+function DueStatusBadge({ status }: { status: ReturnType<typeof getDueStatus> }) {
+  const styles = {
+    overdue: 'bg-red-100 text-red-700',
+    today: 'bg-yellow-100 text-yellow-800',
+    soon: 'bg-orange-100 text-orange-700',
+    upcoming: 'bg-gray-100 text-gray-700',
+  };
+
+  const labels = {
+    overdue: 'Overdue',
+    today: 'Today',
+    soon: 'Soon',
+    upcoming: 'Upcoming',
+  };
+
+  return (
+    <span className={`px-3 py-1 rounded-full text-xs font-medium ${styles[status]}`}>
+      {labels[status]}
+    </span>
   );
 }
 

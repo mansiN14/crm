@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import type { Student, StudentProduct, Meeting, Payment, User, ProductType, Quotation, Reminder } from '../../lib/supabase';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import { PRODUCT_CATALOG, getProductLabel } from '../../lib/products';
 import { ADMISSION_COUNTRIES, ADMISSION_PROGRAMS, DEGREE_LEVELS, getCollegesForCountries } from '../../lib/admissions';
 import {
@@ -19,11 +19,11 @@ import {
   CreditCard,
   Package,
   Users,
-  Lock,
   Send,
   FileText,
   Save,
   X,
+  Bell,
 } from 'lucide-react';
 
 type CareerStageKey =
@@ -60,8 +60,14 @@ const CAREER_WORKFLOW_STAGES: Array<{ key: CareerStageKey; label: string }> = [
 ];
 
 const todayDate = () => new Date().toISOString().split('T')[0];
+const COMPANY_EMAIL = 'vijay@thetrueaxis.in';
 const SCHOOL_GRADES = ['8th Grade', '9th Grade', '10th Grade', '11th Grade', '12th Grade'];
 const isSchoolGrade = (grade?: string) => Boolean(grade && SCHOOL_GRADES.includes(grade));
+const formatCurrency = (amount: string | number) => `₹${Number(amount || 0).toLocaleString()}`;
+
+function getPaymentAmountSource(payments: Payment[]) {
+  return payments.find((payment) => Number(payment.total_amount || 0) > 0) || null;
+}
 
 export function StudentDetailPage() {
   const { id } = useParams();
@@ -69,26 +75,21 @@ export function StudentDetailPage() {
   const { user } = useAuth();
   const [student, setStudent] = useState<Student | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'products' | 'meetings' | 'payments'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'timeline' | 'products' | 'meetings' | 'payments'>('overview');
   const [products, setProducts] = useState<StudentProduct[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [quotations, setQuotations] = useState<Quotation[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
   const [counselors, setCounselors] = useState<User[]>([]);
   const [showFeeModal, setShowFeeModal] = useState(false);
   const [savingStatus, setSavingStatus] = useState<Student['status'] | null>(null);
   const [notesDraft, setNotesDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
 
-  useEffect(() => {
-    if (id) {
-      fetchStudent();
-      fetchRelatedData();
-      fetchCounselors();
-    }
-  }, [id]);
+  const fetchStudent = useCallback(async () => {
+    if (!id) return;
 
-  const fetchStudent = async () => {
     try {
       const { data, error } = await supabase
         .from('students')
@@ -104,26 +105,38 @@ export function StudentDetailPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
-  const fetchRelatedData = async () => {
-    const [productsRes, meetingsRes, paymentsRes, quotationsRes] = await Promise.all([
+  const fetchRelatedData = useCallback(async () => {
+    if (!id) return;
+
+    const [productsRes, meetingsRes, paymentsRes, quotationsRes, remindersRes] = await Promise.all([
       supabase.from('student_products').select('*, mentor:users(*)').eq('student_id', id),
       supabase.from('meetings').select('*, createdBy:users(*)').eq('student_id', id).order('meeting_date', { ascending: false }),
       supabase.from('payments').select('*').eq('student_id', id).order('due_date', { ascending: false }),
       supabase.from('quotations').select('*').eq('student_id', id).order('created_at', { ascending: false }),
+      supabase.from('reminders').select('*').eq('student_id', id).order('reminder_date', { ascending: false }),
     ]);
 
     setProducts(productsRes.data || []);
     setMeetings(meetingsRes.data || []);
     setPayments(paymentsRes.data || []);
     setQuotations(quotationsRes.data || []);
-  };
+    setReminders(remindersRes.data || []);
+  }, [id]);
 
-  const fetchCounselors = async () => {
+  const fetchCounselors = useCallback(async () => {
     const { data } = await supabase.from('users').select('*').in('role', ['admin', 'counselor']);
     setCounselors(data || []);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (id) {
+      fetchStudent();
+      fetchRelatedData();
+      fetchCounselors();
+    }
+  }, [fetchCounselors, fetchRelatedData, fetchStudent, id]);
 
   const updateStudentStatus = async (status: Student['status']) => {
     if (!id || !student || student.status === status) return;
@@ -188,7 +201,7 @@ export function StudentDetailPage() {
         (sum, payment) => sum + Math.max(Number(payment.total_amount || 0) - Number(payment.amount_paid || 0), 0),
         0
       );
-  const feeBalance = activeQuotation ? Number(activeQuotation.total_amount) - totalPaid : totalDue;
+  const feeBalance = Math.max(activeQuotation ? Number(activeQuotation.total_amount) - totalPaid : totalDue, 0);
 
   return (
     <div className="space-y-6">
@@ -213,7 +226,7 @@ export function StudentDetailPage() {
               </div>
             </div>
             <button
-              onClick={() => navigate(`/students/${id}/edit`)}
+              onClick={() => navigate(`/students?edit_student_id=${encodeURIComponent(id || '')}`)}
               className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors"
             >
               <Edit2 size={18} />
@@ -281,7 +294,7 @@ export function StudentDetailPage() {
 
       <div className="border-b border-gray-200">
         <div className="flex gap-3 overflow-x-auto">
-          {['overview', 'products', 'meetings', 'payments'].map((tab) => (
+          {['overview', 'timeline', 'products', 'meetings', 'payments'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab as typeof activeTab)}
@@ -462,7 +475,7 @@ export function StudentDetailPage() {
                   onClick={() => setActiveTab('payments')}
                   className="text-sm font-medium text-navy-900 hover:text-navy-700"
                 >
-                  Add payments
+                  Add payment
                 </button>
               </div>
             </div>
@@ -512,9 +525,22 @@ export function StudentDetailPage() {
         </div>
       )}
 
+      {activeTab === 'timeline' && (
+        <TimelineTab
+          student={student}
+          products={products}
+          meetings={meetings}
+          payments={payments}
+          quotations={quotations}
+          reminders={reminders}
+        />
+      )}
+
       {activeTab === 'products' && (
         <ProductsTab
           studentId={id!}
+          studentName={student.student_name}
+          studentEmail={student.email}
           products={products}
           counselors={counselors}
           quotations={quotations}
@@ -545,6 +571,7 @@ export function StudentDetailPage() {
           studentName={student.student_name}
           products={products}
           quotation={activeQuotation}
+          paymentAmountSource={getPaymentAmountSource(payments)}
           onClose={() => setShowFeeModal(false)}
           onSave={() => {
             setShowFeeModal(false);
@@ -556,8 +583,140 @@ export function StudentDetailPage() {
   );
 }
 
+type TimelineItem = {
+  id: string;
+  date: string;
+  title: string;
+  detail: string;
+  kind: 'profile' | 'product' | 'meeting' | 'payment' | 'quotation' | 'reminder';
+};
+
+function TimelineTab({
+  student,
+  products,
+  meetings,
+  payments,
+  quotations,
+  reminders,
+}: {
+  student: Student;
+  products: StudentProduct[];
+  meetings: Meeting[];
+  payments: Payment[];
+  quotations: Quotation[];
+  reminders: Reminder[];
+}) {
+  const items: TimelineItem[] = [
+    {
+      id: `student-${student.id}`,
+      date: student.created_at,
+      title: 'Student profile created',
+      detail: student.assigned_counselor?.name ? `Assigned to ${student.assigned_counselor.name}` : 'No counselor assigned',
+      kind: 'profile' as const,
+    },
+    ...products.map((product) => ({
+      id: `product-${product.id}`,
+      date: product.created_at,
+      title: getProductLabel(product.product_type),
+      detail: `Product ${product.status}`,
+      kind: 'product' as const,
+    })),
+    ...meetings.map((meeting) => ({
+      id: `meeting-${meeting.id}`,
+      date: `${meeting.meeting_date}T${meeting.meeting_time || '00:00'}`,
+      title: `Meeting #${meeting.meeting_number}`,
+      detail: meeting.outcome || meeting.next_action || meeting.discussion_notes || 'Meeting scheduled',
+      kind: 'meeting' as const,
+    })),
+    ...payments.map((payment) => ({
+      id: `payment-${payment.id}`,
+      date: payment.payment_date || payment.due_date,
+      title: `Payment #${payment.payment_number}`,
+      detail: `${formatCurrency(payment.amount_paid)} paid, ${formatCurrency(Number(payment.total_amount || 0) - Number(payment.amount_paid || 0))} balance`,
+      kind: 'payment' as const,
+    })),
+    ...quotations.map((quotation) => ({
+      id: `quotation-${quotation.id}`,
+      date: quotation.quotation_date || quotation.created_at,
+      title: `Quotation #${quotation.quotation_number}`,
+      detail: `${quotation.product_name} - ${formatCurrency(quotation.total_amount)} - ${quotation.status}`,
+      kind: 'quotation' as const,
+    })),
+    ...reminders.map((reminder) => ({
+      id: `reminder-${reminder.id}`,
+      date: `${reminder.reminder_date}T${reminder.reminder_time || '00:00'}`,
+      title: reminder.title,
+      detail: `${reminder.reminder_type.replace('_', ' ')} - ${reminder.status}`,
+      kind: 'reminder' as const,
+    })),
+  ].sort((first, second) => new Date(second.date).getTime() - new Date(first.date).getTime());
+
+  const iconConfig = {
+    profile: { icon: GraduationCap, className: 'bg-navy-100 text-navy-700' },
+    product: { icon: Package, className: 'bg-blue-100 text-blue-700' },
+    meeting: { icon: Calendar, className: 'bg-purple-100 text-purple-700' },
+    payment: { icon: CreditCard, className: 'bg-green-100 text-green-700' },
+    quotation: { icon: FileText, className: 'bg-orange-100 text-orange-700' },
+    reminder: { icon: Bell, className: 'bg-red-100 text-red-700' },
+  };
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="border-b border-gray-200 p-6">
+        <h2 className="text-lg font-semibold text-navy-900">Student Timeline</h2>
+        <p className="mt-1 text-sm text-gray-600">Meetings, payments, reminders, quotations, and profile milestones in one place.</p>
+      </div>
+      {items.length === 0 ? (
+        <div className="p-12 text-center text-gray-500">No timeline activity yet</div>
+      ) : (
+        <div className="p-6">
+          <div className="relative">
+            <div className="absolute bottom-0 left-5 top-0 w-px bg-gray-200" />
+            <div className="space-y-5">
+              {items.map((item) => {
+                const config = iconConfig[item.kind];
+                const Icon = config.icon;
+
+                return (
+                  <div key={item.id} className="relative flex gap-4">
+                    <div className={`relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${config.className}`}>
+                      <Icon size={18} />
+                    </div>
+                    <div className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-gray-50 p-4">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="font-semibold text-navy-900">{item.title}</p>
+                        <p className="text-sm text-gray-500">{formatTimelineDate(item.date)}</p>
+                      </div>
+                      <p className="mt-1 text-sm text-gray-600">{item.detail}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatTimelineDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: value.includes('T') ? 'numeric' : undefined,
+    minute: value.includes('T') ? '2-digit' : undefined,
+  });
+}
+
 function ProductsTab({
   studentId,
+  studentName,
+  studentEmail,
   products,
   counselors,
   quotations,
@@ -568,6 +727,8 @@ function ProductsTab({
   onRefresh,
 }: {
   studentId: string;
+  studentName: string;
+  studentEmail?: string;
   products: StudentProduct[];
   counselors: User[];
   quotations: Quotation[];
@@ -603,13 +764,18 @@ function ProductsTab({
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {products.map((product) => (
-            <div key={product.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-              <div className="flex items-start justify-between mb-4">
+            <div
+              key={product.id}
+              className={`bg-white rounded-xl shadow-sm border border-gray-200 p-6 ${
+                product.product_type === 'career_counselling' ? 'lg:col-span-2' : ''
+              }`}
+            >
+              <div className="flex items-start justify-between gap-4 mb-5">
                 <div>
-                  <h3 className="font-semibold text-navy-900">
+                  <h3 className="text-lg font-semibold text-navy-900">
                     {getProductLabel(product.product_type)}
                   </h3>
-                  <span className={`text-xs px-2 py-1 rounded-full ${
+                  <span className={`mt-2 inline-flex text-xs px-2.5 py-1 rounded-full font-medium capitalize ${
                     product.status === 'completed' ? 'bg-green-100 text-green-700' :
                     product.status === 'cancelled' ? 'bg-red-100 text-red-700' :
                     'bg-blue-100 text-blue-700'
@@ -630,14 +796,16 @@ function ProductsTab({
 
               {product.product_type === 'career_counselling' && (
                 <>
-                  <div className="space-y-2 text-sm">
-                    <p><span className="text-gray-500">Interests:</span> {product.interests || 'N/A'}</p>
-                    <p><span className="text-gray-500">Strengths:</span> {product.strengths || 'N/A'}</p>
-                    <p><span className="text-gray-500">Career:</span> {product.preferred_career || 'N/A'}</p>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <ProductInfoBlock label="Interests" value={product.interests} />
+                    <ProductInfoBlock label="Strengths" value={product.strengths} />
+                    <ProductInfoBlock label="Preferred Career" value={product.preferred_career} />
                   </div>
                   <CareerCounsellingWorkflow
                     product={product}
                     studentId={studentId}
+                    studentName={studentName}
+                    studentEmail={studentEmail}
                     counselors={counselors}
                     quotations={quotations}
                     payments={payments}
@@ -672,11 +840,13 @@ function ProductsTab({
               )}
 
               {product.product_type === 'psychometric_test' && (
-                <div className="space-y-2 text-sm">
-                  <p><span className="text-gray-500">Test Date:</span> {product.test_date || 'N/A'}</p>
-                  <p><span className="text-gray-500">Status:</span> {product.test_status || 'N/A'}</p>
-                  <p><span className="text-gray-500">Report:</span> {product.report_generated ? 'Generated' : 'Pending'}</p>
-                </div>
+                <PsychometricTestPanel
+                  product={product}
+                  studentName={studentName}
+                  studentEmail={studentEmail}
+                  currentUser={currentUser}
+                  onRefresh={onRefresh}
+                />
               )}
             </div>
           ))}
@@ -702,6 +872,8 @@ function ProductsTab({
 function CareerCounsellingWorkflow({
   product,
   studentId,
+  studentName,
+  studentEmail,
   counselors,
   quotations,
   payments,
@@ -713,6 +885,8 @@ function CareerCounsellingWorkflow({
 }: {
   product: StudentProduct;
   studentId: string;
+  studentName: string;
+  studentEmail?: string;
   counselors: User[];
   quotations: Quotation[];
   payments: Payment[];
@@ -758,7 +932,7 @@ function CareerCounsellingWorkflow({
     quotations.find((quotation) => quotation.product_name === getProductLabel(product.product_type));
   const quotationAccepted = relatedQuotation?.status === 'accepted';
   const paidForQuotation = payments
-    .filter((payment) => !relatedQuotation || payment.quotation_id === relatedQuotation.id)
+    .filter((payment) => !relatedQuotation || !payment.quotation_id || payment.quotation_id === relatedQuotation.id)
     .reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0);
   const paymentReceived = Boolean(
     relatedQuotation && paidForQuotation >= Number(relatedQuotation.total_amount || 0)
@@ -783,6 +957,9 @@ function CareerCounsellingWorkflow({
   const currentStage = CAREER_WORKFLOW_STAGES.find((stage) => !completed[stage.key])?.key || 'future_engagement';
   const stageIndex = CAREER_WORKFLOW_STAGES.findIndex((stage) => stage.key === currentStage);
   const canUse = (key: CareerStageKey) => CAREER_WORKFLOW_STAGES.findIndex((stage) => stage.key === key) <= stageIndex;
+  const completedCount = CAREER_WORKFLOW_STAGES.filter((stage) => completed[stage.key]).length;
+  const progressPercent = Math.round((completedCount / CAREER_WORKFLOW_STAGES.length) * 100);
+  const currentStageLabel = CAREER_WORKFLOW_STAGES.find((stage) => stage.key === currentStage)?.label || 'Completed';
 
   const saveStage = async (stage: CareerStageKey, data: Record<string, unknown>, action: string) => {
     setSavingStage(stage);
@@ -850,32 +1027,81 @@ function CareerCounsellingWorkflow({
     ]);
   };
 
+  const sendTestLinkEmail = () => {
+    if (!studentEmail || !testLink) return;
+
+    openTestLinkEmailDraft({
+      to: studentEmail,
+      studentName,
+      testLink,
+      productLabel: 'Career Counselling Psychometric Test',
+      counselorName: currentUser?.name,
+    });
+
+    saveStage(
+      'send_test_link',
+      { test_link: testLink, test_link_sent_at: todayDate(), test_status: 'sent' },
+      'Sent Psychometric Test Link'
+    );
+  };
+
   return (
-    <div className="mt-5 border-t border-gray-200 pt-5 space-y-5">
-      <div>
-        <h4 className="font-semibold text-navy-900 mb-3">Career Counselling Workflow</h4>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+    <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-gray-50">
+      <div className="border-b border-gray-200 bg-white p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Career Counselling Workflow</p>
+            <h4 className="mt-1 text-xl font-semibold text-navy-900">{currentStageLabel}</h4>
+            <p className="mt-1 text-sm text-gray-600">
+              {completedCount} of {CAREER_WORKFLOW_STAGES.length} stages completed
+            </p>
+          </div>
+          <div className="w-full lg:max-w-sm">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="font-medium text-navy-900">Overall progress</span>
+              <span className="text-gray-600">{progressPercent}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-gray-200">
+              <div className="h-full rounded-full bg-navy-900 transition-all" style={{ width: `${progressPercent}%` }} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 p-5 xl:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="rounded-xl border border-gray-200 bg-white p-4">
+          <div className="space-y-2">
           {CAREER_WORKFLOW_STAGES.map((stage, index) => {
             const isComplete = completed[stage.key];
             const isCurrent = stage.key === currentStage;
             return (
               <div
                 key={stage.key}
-                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
+                className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 text-sm ${
                   isComplete
-                    ? 'border-green-200 bg-green-50 text-green-700'
+                    ? 'border-green-200 bg-green-50 text-green-800'
                     : isCurrent
-                      ? 'border-blue-200 bg-blue-50 text-blue-700'
-                      : 'border-gray-200 bg-gray-50 text-gray-500'
+                      ? 'border-navy-200 bg-navy-50 text-navy-900 shadow-sm'
+                      : 'border-transparent bg-white text-gray-500'
                 }`}
               >
-                {isComplete ? <CheckCircle2 size={15} /> : isCurrent ? <Calendar size={15} /> : <Lock size={15} />}
-                <span className="font-medium">{index + 1}. {stage.label}</span>
+                <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                  isComplete
+                    ? 'bg-green-600 text-white'
+                    : isCurrent
+                      ? 'bg-navy-900 text-white'
+                      : 'bg-gray-100 text-gray-500'
+                }`}>
+                  {isComplete ? <CheckCircle2 size={15} /> : index + 1}
+                </span>
+                <span className="font-medium leading-snug">{stage.label}</span>
               </div>
             );
           })}
-        </div>
-      </div>
+          </div>
+        </aside>
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
 
       <WorkflowSection title="Orientation" locked={!canUse('orientation')}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -907,13 +1133,21 @@ function CareerCounsellingWorkflow({
 
       <WorkflowSection title="Psychometric Test" locked={!canUse('send_test_link')}>
         <InputField label="Test Link" value={testLink} onChange={setTestLink} placeholder="https://..." />
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+          <p className="font-medium text-navy-900">Email draft</p>
+          <p className="mt-1">
+            {studentEmail
+              ? `A Gmail draft will open from ${COMPANY_EMAIL} to ${studentEmail}. Review it, then click Send in Gmail.`
+              : 'Add an email address to the student profile before sending the link.'}
+          </p>
+        </div>
         <div className="flex flex-wrap gap-3">
           <WorkflowButton
-            disabled={!canUse('send_test_link') || !testLink}
+            disabled={!canUse('send_test_link') || !testLink || !studentEmail}
             saving={savingStage === 'send_test_link'}
             icon={<Send size={16} />}
-            label="Send Test Link"
-            onClick={() => saveStage('send_test_link', { test_link: testLink, test_link_sent_at: todayDate(), test_status: 'sent' }, 'Sent Psychometric Test Link')}
+            label="Open Gmail Draft"
+            onClick={sendTestLinkEmail}
           />
           <WorkflowButton
             disabled={!canUse('test_completed') || !(product.test_status === 'sent' || product.test_status === 'completed')}
@@ -926,7 +1160,7 @@ function CareerCounsellingWorkflow({
       </WorkflowSection>
 
       <WorkflowSection title="Quotation" locked={!canUse('quotation')}>
-        <div className="rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
           {relatedQuotation ? (
             <p>Linked quotation #{relatedQuotation.quotation_number}: <span className="font-medium capitalize">{relatedQuotation.status}</span></p>
           ) : (
@@ -937,9 +1171,15 @@ function CareerCounsellingWorkflow({
       </WorkflowSection>
 
       <WorkflowSection title="Payment" locked={!canUse('payment')}>
-        <div className="rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
-          <p>Received: ₹{paidForQuotation.toLocaleString()}</p>
-          <p>Required: ₹{Number(relatedQuotation?.total_amount || 0).toLocaleString()}</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Received</p>
+            <p className="mt-1 text-lg font-semibold text-green-700">₹{paidForQuotation.toLocaleString()}</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Required</p>
+            <p className="mt-1 text-lg font-semibold text-navy-900">₹{Number(relatedQuotation?.total_amount || 0).toLocaleString()}</p>
+          </div>
         </div>
         <WorkflowButton disabled={!canUse('payment') || !quotationAccepted} icon={<CreditCard size={16} />} label="Open Payments" onClick={onOpenPayments} />
       </WorkflowSection>
@@ -993,18 +1233,18 @@ function CareerCounsellingWorkflow({
         />
       </WorkflowSection>
 
-      <WorkflowSection title="Review Sessions" locked={!canUse('review_1')}>
-        <div className="space-y-4">
+      <WorkflowSection title="Review Sessions" locked={!canUse('review_1')} className="xl:col-span-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           {reviews.map((review, index) => {
             const key = `review_${index + 1}` as CareerStageKey;
             const builtInKey = index < 3 ? key : 'review_3';
             return (
-              <div key={review.id} className="rounded-lg border border-gray-200 p-4 space-y-3">
+              <div key={review.id} className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <h5 className="font-medium text-navy-900">{review.title}</h5>
-                  {review.completed && <span className="text-xs font-medium text-green-700">Completed</span>}
+                  {review.completed && <span className="rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700">Completed</span>}
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   <InputField label="Date" type="date" value={review.date || ''} onChange={(v) => updateReview(index, 'date', v)} />
                   <InputField label="Progress" value={review.progress || ''} onChange={(v) => updateReview(index, 'progress', v)} />
                 </div>
@@ -1030,7 +1270,7 @@ function CareerCounsellingWorkflow({
         </button>
       </WorkflowSection>
 
-      <WorkflowSection title="Future Engagement" locked={!canUse('future_engagement')}>
+      <WorkflowSection title="Future Engagement" locked={!canUse('future_engagement')} className="xl:col-span-2">
         <p className="text-sm text-gray-600">Assign another service to this same student profile without duplicating the student record.</p>
         <div className="flex flex-wrap gap-3">
           <WorkflowButton
@@ -1047,24 +1287,168 @@ function CareerCounsellingWorkflow({
           />
         </div>
       </WorkflowSection>
+        </div>
+      </div>
     </div>
   );
+}
+
+function ProductInfoBlock({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">{label}</p>
+      <p className="mt-1 text-sm font-medium text-navy-900">{value || 'Not recorded'}</p>
+    </div>
+  );
+}
+
+function PsychometricTestPanel({
+  product,
+  studentName,
+  studentEmail,
+  currentUser,
+  onRefresh,
+}: {
+  product: StudentProduct;
+  studentName: string;
+  studentEmail?: string;
+  currentUser: User | null;
+  onRefresh: () => void;
+}) {
+  const [testLink, setTestLink] = useState(product.test_link || '');
+  const [saving, setSaving] = useState(false);
+
+  const handleOpenGmailDraft = async () => {
+    if (!studentEmail || !testLink) return;
+
+    openTestLinkEmailDraft({
+      to: studentEmail,
+      studentName,
+      testLink,
+      productLabel: 'Psychometric Test',
+      counselorName: currentUser?.name,
+    });
+
+    setSaving(true);
+    try {
+      await supabase
+        .from('student_products')
+        .update({ test_link: testLink, test_link_sent_at: todayDate(), test_status: 'sent' })
+        .eq('id', product.id);
+
+      await supabase.from('activity_logs').insert({
+        user_id: currentUser?.id || null,
+        action: 'Sent Psychometric Test Link',
+        entity_type: 'student_product',
+        entity_id: product.id,
+        details: {
+          student_id: product.student_id,
+          product_type: product.product_type,
+          sent_to: studentEmail,
+        },
+      });
+
+      onRefresh();
+    } catch (error) {
+      console.error('Error saving psychometric test link:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <ProductInfoBlock label="Test Date" value={product.test_date} />
+        <ProductInfoBlock label="Status" value={product.test_status || 'pending'} />
+        <ProductInfoBlock label="Report" value={product.report_generated ? 'Generated' : 'Pending'} />
+      </div>
+
+      <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+        <InputField label="Test Link" value={testLink} onChange={setTestLink} placeholder="https://..." />
+        <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-700">
+          <p className="font-medium text-navy-900">Email draft</p>
+          <p className="mt-1">
+            {studentEmail
+              ? `A Gmail draft will open from ${COMPANY_EMAIL} to ${studentEmail}. Review it, then click Send in Gmail.`
+              : 'Add an email address to the student profile before sending the link.'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleOpenGmailDraft}
+          disabled={!studentEmail || !testLink || saving}
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-sm font-medium text-white hover:bg-navy-800 disabled:bg-gray-200 disabled:text-gray-500"
+        >
+          <Send size={16} />
+          <span>{saving ? 'Saving...' : 'Open Gmail Draft'}</span>
+        </button>
+        <p className="text-xs text-gray-500">
+          Status: {product.test_status || 'pending'}{product.test_link_sent_at ? `, sent on ${product.test_link_sent_at}` : ''}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function openTestLinkEmailDraft({
+  to,
+  studentName,
+  testLink,
+  productLabel,
+  counselorName,
+}: {
+  to: string;
+  studentName: string;
+  testLink: string;
+  productLabel: string;
+  counselorName?: string;
+}) {
+  const subject = `${productLabel} Link`;
+  const body = [
+    `Dear ${studentName},`,
+    '',
+    `Please use the link below to complete your ${productLabel.toLowerCase()}:`,
+    testLink,
+    '',
+    'Once completed, please reply to this email so we can continue with the next step.',
+    '',
+    'Regards,',
+    counselorName || 'True Axis Team',
+  ].join('\n');
+  const params = new URLSearchParams({
+    authuser: COMPANY_EMAIL,
+    view: 'cm',
+    fs: '1',
+    from: COMPANY_EMAIL,
+    to,
+    su: subject,
+    body,
+  });
+  const gmailUrl = `https://mail.google.com/mail/?${params.toString()}`;
+  const draftWindow = window.open(gmailUrl, '_blank');
+
+  if (!draftWindow) {
+    window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
 }
 
 function WorkflowSection({
   title,
   locked,
+  className = '',
   children,
 }: {
   title: string;
   locked: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className={`rounded-lg border p-4 space-y-3 ${locked ? 'border-gray-200 bg-gray-50 opacity-70' : 'border-gray-200 bg-white'}`}>
-      <div className="flex items-center gap-2">
-        {locked && <Lock size={16} className="text-gray-400" />}
+    <section className={`rounded-xl border p-4 space-y-4 shadow-sm ${locked ? 'border-gray-200 bg-gray-50/80' : 'border-gray-200 bg-white'} ${className}`}>
+      <div className="flex items-center justify-between gap-2">
         <h5 className="font-semibold text-navy-900">{title}</h5>
+        {locked && <span className="rounded-full bg-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600">Locked</span>}
       </div>
       {children}
     </section>
@@ -1089,7 +1473,7 @@ function WorkflowButton({
       type="button"
       onClick={onClick}
       disabled={disabled || saving}
-      className="inline-flex items-center justify-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-sm font-medium text-white hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-50"
+      className="inline-flex items-center justify-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-sm font-medium text-white hover:bg-navy-800 disabled:bg-gray-200 disabled:text-gray-500"
     >
       {icon}
       <span>{saving ? 'Saving...' : label}</span>
@@ -1791,7 +2175,7 @@ function PaymentModal({
 }) {
   const [formData, setFormData] = useState({
     quotation_id: payment?.quotation_id || latestQuotation?.id || '',
-    total_amount: payment?.total_amount?.toString() || '',
+    total_amount: payment?.total_amount?.toString() || latestQuotation?.total_amount?.toString() || '',
     amount_paid: payment?.amount_paid?.toString() || '0',
     due_date: payment?.due_date || '',
     payment_date: payment?.payment_date || '',
@@ -1857,7 +2241,7 @@ function PaymentModal({
                 <p>Quotation #{latestQuotation.quotation_number} - ₹{Number(latestQuotation.total_amount).toLocaleString()}</p>
               </div>
             ) : (
-              <p className="text-sm text-orange-600">No fee quotation found yet. Add a counselling fee first.</p>
+              <p className="text-sm text-orange-600">No fee quotation linked yet. This payment amount can be reused when you create one.</p>
             )}
           </div>
 
@@ -1904,6 +2288,7 @@ function FeeModal({
   studentName,
   products,
   quotation,
+  paymentAmountSource,
   onClose,
   onSave,
 }: {
@@ -1911,6 +2296,7 @@ function FeeModal({
   studentName: string;
   products: StudentProduct[];
   quotation: Quotation | null;
+  paymentAmountSource: Payment | null;
   onClose: () => void;
   onSave: () => void;
 }) {
@@ -1920,17 +2306,21 @@ function FeeModal({
   }));
 
   const defaultProduct = productOptions[0];
+  const paymentSourceAmount = paymentAmountSource ? Number(paymentAmountSource.total_amount || 0) : 0;
+  const shouldUsePaymentAmount = !quotation && paymentSourceAmount > 0;
   const [formData, setFormData] = useState({
     customer_name: quotation?.customer_name || studentName,
     product_id: quotation?.product_id || defaultProduct?.id || '',
     product_name: quotation?.product_name || defaultProduct?.label || '',
-    amount: quotation?.amount?.toString() || '',
-    discount: quotation?.discount?.toString() || '0',
-    gst_percentage: quotation?.gst_percentage?.toString() || '18',
+    amount: shouldUsePaymentAmount ? String(paymentSourceAmount) : quotation?.amount?.toString() || '',
+    discount: shouldUsePaymentAmount ? '0' : quotation?.discount?.toString() || '0',
+    gst_percentage: shouldUsePaymentAmount ? '0' : quotation?.gst_percentage?.toString() || '18',
     quotation_date: quotation?.quotation_date || new Date().toISOString().split('T')[0],
     status: quotation?.status || 'draft' as 'draft' | 'sent' | 'accepted' | 'rejected',
   });
   const [saving, setSaving] = useState(false);
+  const taxableAmount = Math.max(Number(formData.amount || 0) - Number(formData.discount || 0), 0);
+  const estimatedTotal = taxableAmount + (taxableAmount * Number(formData.gst_percentage || 0)) / 100;
 
   const handleProductChange = (productId: string) => {
     const selectedProduct = products.find((product) => product.id === productId);
@@ -1946,11 +2336,13 @@ function FeeModal({
     setSaving(true);
 
     try {
-      const amount = Number(formData.amount || 0);
-      const discount = Number(formData.discount || 0);
-      const gstPercentage = Number(formData.gst_percentage || 0);
-      const taxableAmount = Math.max(amount - discount, 0);
-      const totalAmount = taxableAmount + (taxableAmount * gstPercentage) / 100;
+      const amount = shouldUsePaymentAmount ? paymentSourceAmount : Number(formData.amount || 0);
+      const discount = shouldUsePaymentAmount ? 0 : Number(formData.discount || 0);
+      const gstPercentage = shouldUsePaymentAmount ? 0 : Number(formData.gst_percentage || 0);
+      const finalTaxableAmount = Math.max(amount - discount, 0);
+      const totalAmount = shouldUsePaymentAmount
+        ? paymentSourceAmount
+        : finalTaxableAmount + (finalTaxableAmount * gstPercentage) / 100;
 
       const data = {
         student_id: studentId,
@@ -1968,7 +2360,24 @@ function FeeModal({
       if (quotation?.id) {
         await supabase.from('quotations').update(data).eq('id', quotation.id);
       } else {
-        await supabase.from('quotations').insert(data);
+        const quotationNumber = await supabase.rpc('generate_quotation_number');
+        const { data: insertedQuotation, error } = await supabase
+          .from<Quotation>('quotations')
+          .insert({
+            ...data,
+            quotation_number: quotationNumber.data,
+          })
+          .select()
+          .single();
+
+        if (error) throw error;
+
+        if (shouldUsePaymentAmount && paymentAmountSource?.id && insertedQuotation?.id) {
+          await supabase
+            .from('payments')
+            .update({ quotation_id: insertedQuotation.id })
+            .eq('id', paymentAmountSource.id);
+        }
       }
 
       onSave();
@@ -1994,6 +2403,16 @@ function FeeModal({
         <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4">
           <InputField label="Customer Name" value={formData.customer_name} onChange={(v) => setFormData({ ...formData, customer_name: v })} required />
 
+          {shouldUsePaymentAmount && paymentAmountSource && (
+            <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+              <p className="text-sm font-medium text-green-800">Amount linked from payment details</p>
+              <p className="mt-1 text-2xl font-bold text-navy-900">{formatCurrency(paymentSourceAmount)}</p>
+              <p className="mt-1 text-sm text-green-700">
+                Payment #{paymentAmountSource.payment_number} is being used as the quotation total.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Linked Product</label>
             <select
@@ -2008,14 +2427,20 @@ function FeeModal({
             </select>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <InputField label="Base Amount" type="number" value={formData.amount} onChange={(v) => setFormData({ ...formData, amount: v })} required />
-            <InputField label="Discount" type="number" value={formData.discount} onChange={(v) => setFormData({ ...formData, discount: v })} />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <InputField label="GST %" type="number" value={formData.gst_percentage} onChange={(v) => setFormData({ ...formData, gst_percentage: v })} />
+          {shouldUsePaymentAmount ? (
             <InputField label="Quotation Date" type="date" value={formData.quotation_date} onChange={(v) => setFormData({ ...formData, quotation_date: v })} required />
-          </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <InputField label="Base Amount" type="number" value={formData.amount} onChange={(v) => setFormData({ ...formData, amount: v })} required />
+                <InputField label="Discount" type="number" value={formData.discount} onChange={(v) => setFormData({ ...formData, discount: v })} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <InputField label="GST %" type="number" value={formData.gst_percentage} onChange={(v) => setFormData({ ...formData, gst_percentage: v })} />
+                <InputField label="Quotation Date" type="date" value={formData.quotation_date} onChange={(v) => setFormData({ ...formData, quotation_date: v })} required />
+              </div>
+            </>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
             <select
@@ -2031,13 +2456,8 @@ function FeeModal({
           </div>
 
           <div className="rounded-lg bg-gray-50 p-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <span className="text-sm text-gray-600">Estimated total</span>
-            <span className="font-semibold text-navy-900">
-              ₹{(
-                Math.max(Number(formData.amount || 0) - Number(formData.discount || 0), 0) +
-                (Math.max(Number(formData.amount || 0) - Number(formData.discount || 0), 0) * Number(formData.gst_percentage || 0)) / 100
-              ).toLocaleString()}
-            </span>
+            <span className="text-sm text-gray-600">{shouldUsePaymentAmount ? 'Quotation total' : 'Estimated total'}</span>
+            <span className="font-semibold text-navy-900">{formatCurrency(shouldUsePaymentAmount ? paymentSourceAmount : estimatedTotal)}</span>
           </div>
 
           <div className="flex gap-3 pt-4">

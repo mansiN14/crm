@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import type { Payment } from '../../lib/supabase';
+import { getDueStatus } from '../../lib/dateUtils';
+import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import { Search, CreditCard, AlertCircle, CheckCircle, Clock, DollarSign } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -10,11 +12,7 @@ export function PaymentsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
-  useEffect(() => {
-    fetchPayments();
-  }, [statusFilter]);
-
-  const fetchPayments = async () => {
+  const fetchPayments = useCallback(async () => {
     try {
       let query = supabase
         .from('payments')
@@ -37,13 +35,25 @@ export function PaymentsPage() {
         return p;
       });
 
-      setPayments(updatedData);
+      setPayments(
+        updatedData.sort((first, second) => {
+          const priority = { overdue: 0, today: 1, soon: 2, upcoming: 3 };
+          const firstPriority = first.status === 'paid' ? 4 : priority[getDueStatus(first.due_date)];
+          const secondPriority = second.status === 'paid' ? 4 : priority[getDueStatus(second.due_date)];
+          if (firstPriority !== secondPriority) return firstPriority - secondPriority;
+          return first.due_date.localeCompare(second.due_date);
+        })
+      );
     } catch (error) {
       console.error('Error fetching payments:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [statusFilter]);
+
+  useEffect(() => {
+    fetchPayments();
+  }, [fetchPayments]);
 
   const filteredPayments = payments.filter((payment) =>
     payment.student?.student_name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -54,11 +64,7 @@ export function PaymentsPage() {
   const overduePayments = payments.filter(p => p.status === 'overdue');
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <div className="w-12 h-12 border-4 border-navy-200 border-t-maroon-600 rounded-full animate-spin" />
-      </div>
-    );
+    return <LoadingSpinner />;
   }
 
   return (
@@ -76,7 +82,7 @@ export function PaymentsPage() {
             </div>
             <div className="min-w-0">
               <p className="text-sm text-gray-600">Total Collected</p>
-              <p className="truncate text-xl font-bold text-green-600 sm:text-2xl">Rs {totalPaid.toLocaleString()}</p>
+              <p className="truncate text-xl font-bold text-green-600 sm:text-2xl">₹{totalPaid.toLocaleString()}</p>
             </div>
           </div>
         </div>
@@ -88,7 +94,7 @@ export function PaymentsPage() {
             </div>
             <div className="min-w-0">
               <p className="text-sm text-gray-600">Pending</p>
-              <p className="truncate text-xl font-bold text-orange-600 sm:text-2xl">Rs {totalPending.toLocaleString()}</p>
+              <p className="truncate text-xl font-bold text-orange-600 sm:text-2xl">₹{totalPending.toLocaleString()}</p>
             </div>
           </div>
         </div>
@@ -120,7 +126,7 @@ export function PaymentsPage() {
                   <p className="text-sm text-gray-500">Due: {payment.due_date}</p>
                 </div>
                 <p className="font-semibold text-red-600">
-                  Rs {(Number(payment.total_amount) - Number(payment.amount_paid)).toLocaleString()}
+                  ₹{(Number(payment.total_amount) - Number(payment.amount_paid)).toLocaleString()}
                 </p>
               </div>
             ))}
@@ -168,19 +174,26 @@ export function PaymentsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {filteredPayments.map((payment) => (
-                <tr key={payment.id} className="hover:bg-gray-50">
+              {filteredPayments.map((payment) => {
+                const dueStatus = payment.status === 'paid' ? null : getDueStatus(payment.due_date);
+                return (
+                <tr key={payment.id} className={dueStatus === 'overdue' ? 'bg-red-50 hover:bg-red-50' : 'hover:bg-gray-50'}>
                   <td className="px-6 py-4">
                     <Link to={`/students/${payment.student_id}`} className="text-navy-900 hover:text-maroon-600 font-medium">
                       {payment.student?.student_name}
                     </Link>
                   </td>
                   <td className="px-6 py-4 text-gray-700">#{payment.payment_number}</td>
-                  <td className="px-6 py-4 text-gray-700">{payment.due_date}</td>
-                  <td className="px-6 py-4 font-medium text-navy-900">Rs {Number(payment.total_amount).toLocaleString()}</td>
-                  <td className="px-6 py-4 text-green-600 font-medium">Rs {Number(payment.amount_paid).toLocaleString()}</td>
+                  <td className="px-6 py-4 text-gray-700">
+                    <div className="flex flex-col gap-1">
+                      <span>{payment.due_date}</span>
+                      {dueStatus && <DueStatusBadge status={dueStatus} />}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 font-medium text-navy-900">₹{Number(payment.total_amount).toLocaleString()}</td>
+                  <td className="px-6 py-4 text-green-600 font-medium">₹{Number(payment.amount_paid).toLocaleString()}</td>
                   <td className="px-6 py-4 font-medium text-orange-600">
-                    Rs {(Number(payment.total_amount) - Number(payment.amount_paid)).toLocaleString()}
+                    ₹{(Number(payment.total_amount) - Number(payment.amount_paid)).toLocaleString()}
                   </td>
                   <td className="px-6 py-4">
                     <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
@@ -195,7 +208,8 @@ export function PaymentsPage() {
                     </span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -207,5 +221,26 @@ export function PaymentsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function DueStatusBadge({ status }: { status: ReturnType<typeof getDueStatus> }) {
+  const styles = {
+    overdue: 'bg-red-100 text-red-700',
+    today: 'bg-yellow-100 text-yellow-800',
+    soon: 'bg-orange-100 text-orange-700',
+    upcoming: 'bg-gray-100 text-gray-700',
+  };
+  const labels = {
+    overdue: 'Overdue',
+    today: 'Today',
+    soon: 'Soon',
+    upcoming: 'Upcoming',
+  };
+
+  return (
+    <span className={`inline-flex w-fit rounded-full px-2 py-0.5 text-xs font-medium ${styles[status]}`}>
+      {labels[status]}
+    </span>
   );
 }

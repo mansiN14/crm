@@ -1,12 +1,13 @@
-import { useState } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
+import { useEffect, useState } from 'react';
+import { useAuth } from '../../contexts/useAuth';
+import { supabase } from '../../lib/supabase';
 import { User, Lock, Bell, Save } from 'lucide-react';
 
 export function SettingsPage() {
-  const { user } = useAuth();
+  const { user, refreshUser, updatePassword } = useAuth();
   const [activeTab, setActiveTab] = useState('profile');
   const [saving, setSaving] = useState(false);
-  const [showSaved, setShowSaved] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [profileData, setProfileData] = useState({
     name: user?.name || '',
@@ -20,33 +21,91 @@ export function SettingsPage() {
   });
 
   const [notifications, setNotifications] = useState({
-    email: true,
-    browser: true,
-    reminders: true,
-    payments: true,
+    email: user?.notification_preferences?.email ?? true,
+    browser: user?.notification_preferences?.browser ?? true,
+    reminders: user?.notification_preferences?.reminders ?? true,
+    payments: user?.notification_preferences?.payments ?? true,
   });
 
+  useEffect(() => {
+    setProfileData({
+      name: user?.name || '',
+      email: user?.email || '',
+    });
+    setNotifications({
+      email: user?.notification_preferences?.email ?? true,
+      browser: user?.notification_preferences?.browser ?? true,
+      reminders: user?.notification_preferences?.reminders ?? true,
+      payments: user?.notification_preferences?.payments ?? true,
+    });
+  }, [user]);
+
   const handleSaveProfile = async () => {
+    if (!user?.id) return;
     setSaving(true);
-    setTimeout(() => {
-      setSaving(false);
-      setShowSaved(true);
-      setTimeout(() => setShowSaved(false), 3000);
-    }, 1000);
+    setStatusMessage(null);
+
+    const { error } = await supabase
+      .from('users')
+      .update({ name: profileData.name.trim() })
+      .eq('id', user.id);
+
+    if (error) {
+      setStatusMessage({ type: 'error', text: error.message || 'Unable to save profile changes.' });
+    } else {
+      await refreshUser();
+      setStatusMessage({ type: 'success', text: 'Profile updated successfully.' });
+    }
+
+    setSaving(false);
+  };
+
+  const handleSaveNotifications = async () => {
+    if (!user?.id) return;
+    setSaving(true);
+    setStatusMessage(null);
+
+    const { error } = await supabase
+      .from('users')
+      .update({ notification_preferences: notifications })
+      .eq('id', user.id);
+
+    if (error) {
+      setStatusMessage({ type: 'error', text: error.message || 'Unable to save notification preferences.' });
+    } else {
+      await refreshUser();
+      setStatusMessage({ type: 'success', text: 'Notification preferences updated.' });
+    }
+
+    setSaving(false);
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    setStatusMessage(null);
+
     if (passwordData.newPassword !== passwordData.confirmPassword) {
-      alert('Passwords do not match');
+      setStatusMessage({ type: 'error', text: 'Passwords do not match.' });
       return;
     }
+
+    if (passwordData.currentPassword === passwordData.newPassword) {
+      setStatusMessage({ type: 'error', text: 'Choose a new password that is different from your current password.' });
+      return;
+    }
+
     setSaving(true);
-    setTimeout(() => {
+    const { error } = await updatePassword(passwordData.currentPassword, passwordData.newPassword);
+
+    if (error) {
+      setStatusMessage({ type: 'error', text: error.message || 'Unable to update password.' });
+    } else {
       setSaving(false);
       setPasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
-      alert('Password changed successfully');
-    }, 1000);
+      setStatusMessage({ type: 'success', text: 'Password updated successfully.' });
+    }
+
+    setSaving(false);
   };
 
   return (
@@ -78,6 +137,16 @@ export function SettingsPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        {statusMessage && (
+          <div className={`mb-6 rounded-lg border px-4 py-3 text-sm ${
+            statusMessage.type === 'success'
+              ? 'border-green-200 bg-green-50 text-green-700'
+              : 'border-red-200 bg-red-50 text-red-700'
+          }`}>
+            {statusMessage.text}
+          </div>
+        )}
+
         {activeTab === 'profile' && (
           <div className="max-w-lg space-y-6">
             <div className="flex items-center gap-6 mb-8">
@@ -130,9 +199,6 @@ export function SettingsPage() {
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
 
-            {showSaved && (
-              <p className="text-green-600 font-medium">Changes saved successfully!</p>
-            )}
           </div>
         )}
 
@@ -254,6 +320,16 @@ export function SettingsPage() {
                 </label>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={handleSaveNotifications}
+              disabled={saving}
+              className="flex items-center gap-2 px-6 py-2 bg-navy-900 hover:bg-navy-800 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              <Save size={18} />
+              {saving ? 'Saving...' : 'Save Preferences'}
+            </button>
           </div>
         )}
       </div>

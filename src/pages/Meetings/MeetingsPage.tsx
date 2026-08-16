@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import type { Meeting } from '../../lib/supabase';
 import { Search, Calendar, ChevronRight } from 'lucide-react';
@@ -10,11 +10,7 @@ export function MeetingsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFilter, setDateFilter] = useState('upcoming');
 
-  useEffect(() => {
-    fetchMeetings();
-  }, [dateFilter]);
-
-  const fetchMeetings = async () => {
+  const fetchMeetings = useCallback(async () => {
     try {
       const today = new Date().toISOString().split('T')[0];
       let query = supabase
@@ -38,7 +34,11 @@ export function MeetingsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [dateFilter]);
+
+  useEffect(() => {
+    fetchMeetings();
+  }, [fetchMeetings]);
 
   const filteredMeetings = meetings.filter((meeting) =>
     meeting.student?.student_name.toLowerCase().includes(searchQuery.toLowerCase())

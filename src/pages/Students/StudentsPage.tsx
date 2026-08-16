@@ -107,6 +107,7 @@ export function StudentsPage() {
   const [counselors, setCounselors] = useState<User[]>([]);
   const [searchParams, setSearchParams] = useSearchParams();
   const inquiryId = searchParams.get('inquiry_id');
+  const editStudentId = searchParams.get('edit_student_id');
 
   useEffect(() => {
     fetchStudents();
@@ -121,17 +122,24 @@ export function StudentsPage() {
     }
   }, [inquiryId]);
 
-  const clearInquiryPrefill = () => {
-    if (!inquiryId) return;
+  useEffect(() => {
+    if (editStudentId) {
+      loadStudentForEdit(editStudentId);
+    }
+  }, [editStudentId]);
+
+  const clearModalParams = () => {
+    if (!inquiryId && !editStudentId) return;
 
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete('inquiry_id');
+    nextParams.delete('edit_student_id');
     setSearchParams(nextParams, { replace: true });
   };
 
   const closeStudentModal = () => {
     setShowModal(false);
-    clearInquiryPrefill();
+    clearModalParams();
   };
 
   const fetchStudents = async () => {
@@ -208,6 +216,24 @@ export function StudentsPage() {
           current_grade: data.student_grade || '',
         },
       } as StudentDraft);
+      setShowModal(true);
+    }
+  };
+
+  const loadStudentForEdit = async (studentId: string) => {
+    const { data, error } = await supabase
+      .from('students')
+      .select('*, education:student_education(*), assigned_counselor:users!assigned_counselor_id(*)')
+      .eq('id', studentId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error loading student for edit:', error);
+      return;
+    }
+
+    if (data) {
+      setEditingStudent(data as StudentDraft);
       setShowModal(true);
     }
   };
@@ -382,7 +408,7 @@ export function StudentsPage() {
             setEditingStudent(null);
             setShowModal(true);
           }}
-          className="flex items-center gap-2 px-4 py-2 bg-navy-900 hover:bg-navy-800 text-white rounded-lg transition-colors"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-white transition-colors hover:bg-navy-800 sm:w-auto"
         >
           <Plus size={20} />
           <span>Add Student</span>
@@ -404,7 +430,7 @@ export function StudentsPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+            className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-navy-500 focus:ring-2 focus:ring-navy-500 sm:w-52"
           >
             <option value="all">All Status</option>
             <option value="ongoing">Ongoing</option>
@@ -418,7 +444,7 @@ export function StudentsPage() {
         <div className="space-y-8">
           {categorizedStudents.map((category) => (
             <div key={category.key} className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-xl font-semibold text-navy-900">{category.label}</h2>
                   <p className="text-sm text-gray-500">{category.description}</p>
@@ -441,9 +467,14 @@ export function StudentsPage() {
           ))}
 
           <div className="space-y-4">
-            <div>
-              <h2 className="text-xl font-semibold text-navy-900">Unassigned</h2>
-              <p className="text-sm text-gray-500">Students without a product linked yet.</p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold text-navy-900">Unassigned</h2>
+                <p className="text-sm text-gray-500">Students without a product linked yet.</p>
+              </div>
+              <span className="shrink-0 px-3 py-1 rounded-full bg-gray-100 text-gray-700 text-sm font-medium">
+                {uncategorizedStudents.length}
+              </span>
             </div>
 
             {uncategorizedStudents.length > 0 ? (
@@ -475,7 +506,7 @@ export function StudentsPage() {
             fetchStudents();
             fetchStudentProducts();
             fetchInquiries();
-            clearInquiryPrefill();
+            clearModalParams();
           }}
         />
       )}

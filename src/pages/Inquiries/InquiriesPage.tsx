@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import type { Inquiry, User } from '../../lib/supabase';
 import { PRODUCT_CATALOG } from '../../lib/products';
 import { ADMISSION_COUNTRIES, ADMISSION_PROGRAMS, DEGREE_LEVELS, getCollegesForCountries } from '../../lib/admissions';
+import { daysBetween } from '../../lib/dateUtils';
+import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import {
   Plus,
   Search,
@@ -16,6 +18,8 @@ import {
   Phone,
   Mail,
   Users,
+  CheckCircle2,
+  Clock,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -75,13 +79,23 @@ export function InquiriesPage() {
   };
 
   const canDelete = user?.role === 'admin';
+  const funnelStats = [
+    { label: 'New', value: inquiries.filter((inquiry) => inquiry.status === 'new').length, icon: Users },
+    { label: 'Attended', value: inquiries.filter((inquiry) => inquiry.status === 'attended').length, icon: CheckCircle2 },
+    {
+      label: 'Student Created',
+      value: inquiries.filter((inquiry) => inquiry.status === 'ongoing' || inquiry.status === 'completed').length,
+      icon: GraduationCapIcon,
+    },
+    {
+      label: 'Stale Leads',
+      value: inquiries.filter((inquiry) => inquiry.status === 'new' && daysBetween(inquiry.inquiry_date) >= 7).length,
+      icon: Clock,
+    },
+  ];
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <div className="w-12 h-12 border-4 border-navy-200 border-t-maroon-600 rounded-full animate-spin" />
-      </div>
-    );
+    return <LoadingSpinner />;
   }
 
   return (
@@ -96,11 +110,27 @@ export function InquiriesPage() {
             setEditingInquiry(null);
             setShowModal(true);
           }}
-          className="flex items-center gap-2 px-4 py-2 bg-navy-900 hover:bg-navy-800 text-white rounded-lg transition-colors"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-navy-900 px-4 py-2 text-white transition-colors hover:bg-navy-800 sm:w-auto"
         >
           <Plus size={20} />
           <span>New Inquiry</span>
         </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {funnelStats.map((item) => (
+          <div key={item.label} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-navy-100 text-navy-700">
+                <item.icon size={19} />
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">{item.label}</p>
+                <p className="text-2xl font-bold text-navy-900">{item.value}</p>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
@@ -118,7 +148,7 @@ export function InquiriesPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+            className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-navy-500 focus:ring-2 focus:ring-navy-500 sm:w-52"
           >
             <option value="all">All Status</option>
             <option value="new">New</option>
@@ -131,7 +161,24 @@ export function InquiriesPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="divide-y divide-gray-200 md:hidden">
+          {filteredInquiries.map((inquiry) => (
+            <InquiryMobileCard
+              key={inquiry.id}
+              inquiry={inquiry}
+              canDelete={canDelete}
+              onView={() => navigate(`/inquiries/${inquiry.id}`)}
+              onEdit={() => {
+                setEditingInquiry(inquiry);
+                setShowModal(true);
+              }}
+              onCreateStudent={() => navigate(`/students?inquiry_id=${encodeURIComponent(inquiry.id)}`)}
+              onDelete={() => handleDelete(inquiry.id)}
+            />
+          ))}
+        </div>
+
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[920px]">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
@@ -158,6 +205,7 @@ export function InquiriesPage() {
                   </td>
                   <td className="px-6 py-4">
                     <p className="text-gray-700">{inquiry.inquiry_date}</p>
+                    <InquiryAgeBadge inquiry={inquiry} />
                   </td>
                   <td className="px-6 py-4">
                     <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
@@ -237,6 +285,122 @@ export function InquiriesPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function GraduationCapIcon({ size = 20 }: { size?: number }) {
+  return <UserPlus size={size} />;
+}
+
+function InquiryAgeBadge({ inquiry }: { inquiry: Inquiry }) {
+  const age = daysBetween(inquiry.inquiry_date);
+  const isStale = inquiry.status === 'new' && age >= 7;
+
+  return (
+    <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+      isStale ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+    }`}>
+      {age === 0 ? 'Today' : `${age} day${age === 1 ? '' : 's'} old`}
+    </span>
+  );
+}
+
+function InquiryMobileCard({
+  inquiry,
+  canDelete,
+  onView,
+  onEdit,
+  onCreateStudent,
+  onDelete,
+}: {
+  inquiry: Inquiry;
+  canDelete: boolean;
+  onView: () => void;
+  onEdit: () => void;
+  onCreateStudent: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate font-semibold text-navy-900">{inquiry.student_name}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <StatusBadge status={inquiry.status} />
+            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
+              inquiry.attendance === 'yes' ? 'bg-green-100 text-green-700' :
+              inquiry.attendance === 'no' ? 'bg-red-100 text-red-700' :
+              'bg-gray-100 text-gray-700'
+            }`}>
+              {inquiry.attendance === 'yes' ? 'Attended' : inquiry.attendance === 'no' ? 'No show' : 'Pending'}
+            </span>
+          </div>
+        </div>
+        <button
+          onClick={onView}
+          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-gray-600 transition-colors hover:bg-gray-100 hover:text-navy-900"
+          title="View"
+          aria-label={`View ${inquiry.student_name}`}
+        >
+          <Eye size={18} />
+        </button>
+      </div>
+
+      <div className="mt-4 space-y-2 text-sm text-gray-600">
+        <div className="flex items-center gap-2">
+          <Phone size={15} className="shrink-0 text-gray-400" />
+          <span className="break-all">{inquiry.contact_number}</span>
+        </div>
+        {inquiry.email && (
+          <div className="flex items-center gap-2">
+            <Mail size={15} className="shrink-0 text-gray-400" />
+            <span className="break-all">{inquiry.email}</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <Calendar size={15} className="shrink-0 text-gray-400" />
+          <span>{inquiry.inquiry_date}</span>
+          <InquiryAgeBadge inquiry={inquiry} />
+        </div>
+        <p>Counselor: <span className="font-medium text-navy-900">{inquiry.assigned_counselor?.name || 'Unassigned'}</span></p>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          onClick={onEdit}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+        >
+          <Edit2 size={16} />
+          Edit
+        </button>
+        {inquiry.attendance === 'yes' && inquiry.status === 'attended' ? (
+          <button
+            onClick={onCreateStudent}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-maroon-100 px-3 py-2 text-sm font-medium text-maroon-700 transition-colors hover:bg-maroon-50"
+          >
+            <UserPlus size={16} />
+            Student
+          </button>
+        ) : (
+          <button
+            onClick={onView}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+          >
+            <Eye size={16} />
+            Details
+          </button>
+        )}
+        {canDelete && (
+          <button
+            onClick={onDelete}
+            className="col-span-2 inline-flex items-center justify-center gap-2 rounded-lg border border-red-100 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50"
+          >
+            <Trash2 size={16} />
+            Delete
+          </button>
+        )}
+      </div>
     </div>
   );
 }

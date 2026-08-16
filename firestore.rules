@@ -10,24 +10,72 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
+    function currentUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && currentUser().data.role == 'admin'
+        && currentUser().data.is_active == true;
+    }
+
+    function validUserRole() {
+      return request.resource.data.role in ['admin', 'counselor', 'staff'];
+    }
+
+    function validSelfSignupRole() {
+      return request.resource.data.role in ['counselor', 'staff'];
+    }
+
+    function ownProfileFieldsOnly() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'name',
+        'avatar_url',
+        'notification_preferences',
+        'updated_at'
+      ]);
+    }
+
     match /users/{userId} {
       allow read: if signedIn();
-      allow create: if isOwnUserDocument(userId);
-      allow update: if isOwnUserDocument(userId);
+      allow create: if (isOwnUserDocument(userId) && validSelfSignupRole()) || (isAdmin() && validUserRole());
+      allow update: if (isAdmin() && validUserRole()) || (isOwnUserDocument(userId) && ownProfileFieldsOnly());
+      allow delete: if isAdmin() && request.auth.uid != userId;
+    }
+
+    match /activity_logs/{documentId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if false;
     }
 
     match /{collection}/{documentId} {
-      allow read, create, update, delete: if signedIn()
+      allow read, create, update: if signedIn()
         && collection in [
           'inquiries',
           'students',
+          'business_contacts',
           'student_education',
           'student_products',
           'meetings',
           'reminders',
           'quotations',
-          'payments',
-          'activity_logs'
+          'payments'
+        ];
+
+      allow delete: if isAdmin()
+        && collection in [
+          'inquiries',
+          'students',
+          'business_contacts',
+          'student_education',
+          'student_products',
+          'meetings',
+          'reminders',
+          'quotations',
+          'payments'
         ];
     }
   }

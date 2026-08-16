@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import { GraduationCap, Mail, Lock, User, Shield, Eye, EyeOff, AlertCircle } from 'lucide-react';
 
 export function RegisterPage() {
@@ -8,7 +8,7 @@ export function RegisterPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [role, setRole] = useState<'staff' | 'counselor' | 'admin'>('staff');
+  const [role, setRole] = useState<'staff' | 'counselor'>('staff');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,12 +116,11 @@ export function RegisterPage() {
                   <Shield className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                   <select
                     value={role}
-                    onChange={(e) => setRole(e.target.value as 'staff' | 'counselor' | 'admin')}
+                    onChange={(e) => setRole(e.target.value as 'staff' | 'counselor')}
                     className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500 transition-colors bg-white"
                   >
                     <option value="staff">Staff</option>
                     <option value="counselor">Counselor</option>
-                    <option value="admin">Admin</option>
                   </select>
                 </div>
               </div>

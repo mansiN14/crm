@@ -1,11 +1,12 @@
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/useAuth';
 import {
   LayoutDashboard,
   Users,
   GraduationCap,
   Package,
+  Briefcase,
   Calendar,
   Bell,
   FileText,
@@ -24,6 +25,7 @@ const navItems = [
   { path: '/inquiries', label: 'Inquiries', icon: Users },
   { path: '/students', label: 'Students', icon: GraduationCap },
   { path: '/products', label: 'Products', icon: Package },
+  { path: '/contacts', label: 'Contacts', icon: Briefcase },
   { path: '/meetings', label: 'Meetings', icon: Calendar },
   { path: '/reminders', label: 'Reminders', icon: Bell },
   { path: '/quotations', label: 'Quotations', icon: FileText },

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import type { User, UserRole } from '../../lib/supabase';
 import { Search, Plus, Edit2, UserCheck, UserX, Shield, Users as UsersIcon, X } from 'lucide-react';
@@ -11,11 +11,7 @@ export function UsersPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
 
-  useEffect(() => {
-    fetchUsers();
-  }, [roleFilter]);
-
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       let query = supabase.from('users').select('*').order('created_at', { ascending: false });
 
@@ -31,7 +27,11 @@ export function UsersPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [roleFilter]);
+
+  useEffect(() => {
+    fetchUsers();
+  }, [fetchUsers]);
 
   const filteredUsers = users.filter((u) =>
     u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -239,34 +239,37 @@ function UserModal({
     is_active: user?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setMessage(null);
 
     try {
       if (user?.id) {
-        await supabase.from('users').update(formData).eq('id', user.id);
+        const { error } = await supabase.from('users').update(formData).eq('id', user.id);
+        if (error) throw error;
       } else {
-        const { error: signUpError, data } = await supabase.auth.signUp({
+        const { error: inviteError, data } = await supabase.auth.createUserWithInvite({
           email: formData.email,
-          password: 'TempPassword123!',
         });
 
-        if (signUpError) throw signUpError;
+        if (inviteError) throw inviteError;
 
         if (data.user) {
-          await supabase.from('users').insert({
+          const { error } = await supabase.from('users').insert({
             id: data.user.id,
             ...formData,
           });
+          if (error) throw error;
         }
       }
 
       onSave();
     } catch (error) {
       console.error('Error saving user:', error);
-      alert('Error saving user. Please try again.');
+      setMessage({ type: 'error', text: (error as Error).message || 'Error saving user. Please try again.' });
     } finally {
       setSaving(false);
     }
@@ -285,6 +288,22 @@ function UserModal({
         </div>
 
         <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4">
+          {!user && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+              A password setup email will be sent to the new user.
+            </div>
+          )}
+
+          {message && (
+            <div className={`rounded-lg border px-4 py-3 text-sm ${
+              message.type === 'success'
+                ? 'border-green-200 bg-green-50 text-green-700'
+                : 'border-red-200 bg-red-50 text-red-700'
+            }`}>
+              {message.text}
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Name *</label>
             <input

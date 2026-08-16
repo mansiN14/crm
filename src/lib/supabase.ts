@@ -12,6 +12,7 @@ if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
 }
 
 const authBaseUrl = `https://identitytoolkit.googleapis.com/v1`;
+const secureTokenBaseUrl = `https://securetoken.googleapis.com/v1`;
 const firestoreBaseUrl =
   `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
 const sessionStorageKey = 'true-axis-firebase-session';
@@ -32,6 +33,7 @@ type AuthEvent = 'SIGNED_IN' | 'SIGNED_OUT';
 type AuthListener = (event: AuthEvent, session: FirebaseSession | null) => void;
 
 const authListeners = new Set<AuthListener>();
+let refreshSessionPromise: Promise<FirebaseSession | null> | null = null;
 
 function getStoredSession(): FirebaseSession | null {
   const raw = localStorage.getItem(sessionStorageKey);
@@ -57,8 +59,61 @@ function notifyAuthListeners(event: AuthEvent, session: FirebaseSession | null) 
   authListeners.forEach((listener) => listener(event, session));
 }
 
-function authHeaders(): Record<string, string> {
+function isSessionExpiring(session: FirebaseSession) {
+  return !session.expires_at || session.expires_at <= Math.floor(Date.now() / 1000) + 300;
+}
+
+async function refreshStoredSession(): Promise<FirebaseSession | null> {
   const session = getStoredSession();
+  if (!session?.refresh_token) return session;
+
+  if (!isSessionExpiring(session)) return session;
+
+  if (!refreshSessionPromise) {
+    refreshSessionPromise = (async () => {
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: session.refresh_token || '',
+      });
+
+      const response = await fetch(`${secureTokenBaseUrl}/token?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        setStoredSession(null);
+        notifyAuthListeners('SIGNED_OUT', null);
+        throw new Error(payload?.error?.message || 'Firebase session refresh failed');
+      }
+
+      const refreshedSession: FirebaseSession = {
+        access_token: payload.id_token,
+        refresh_token: payload.refresh_token || session.refresh_token,
+        expires_at: payload.expires_in
+          ? Math.floor(Date.now() / 1000) + Number(payload.expires_in)
+          : undefined,
+        user: {
+          id: payload.user_id || session.user.id,
+          email: session.user.email,
+        },
+      };
+
+      setStoredSession(refreshedSession);
+      notifyAuthListeners('SIGNED_IN', refreshedSession);
+      return refreshedSession;
+    })().finally(() => {
+      refreshSessionPromise = null;
+    });
+  }
+
+  return refreshSessionPromise;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const session = await refreshStoredSession();
   return session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
 }
 
@@ -74,6 +129,12 @@ async function firebaseAuthRequest<T>(endpoint: string, body: Record<string, unk
     throw new Error(payload?.error?.message || 'Firebase authentication request failed');
   }
   return payload as T;
+}
+
+function createTemporaryPassword() {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  const token = Array.from(bytes, (byte) => byte.toString(36).padStart(2, '0')).join('');
+  return `Tta-${token.slice(0, 20)}!`;
 }
 
 function toSession(payload: {
@@ -105,6 +166,14 @@ type FirestoreValue =
   | { timestampValue: string }
   | { arrayValue: { values?: FirestoreValue[] } }
   | { mapValue: { fields?: Record<string, FirestoreValue> } };
+
+type StructuredQueryFilter = {
+  fieldFilter: {
+    field: { fieldPath: string };
+    op: 'EQUAL' | 'IN' | 'GREATER_THAN_OR_EQUAL' | 'LESS_THAN' | 'LESS_THAN_OR_EQUAL' | 'GREATER_THAN';
+    value: FirestoreValue;
+  };
+};
 
 function encodeValue(value: unknown): FirestoreValue {
   if (value === null || value === undefined) return { nullValue: null };
@@ -172,7 +241,7 @@ function withTimestamps(data: Record<string, unknown>, isInsert: boolean) {
 }
 
 async function firestoreRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = authHeaders();
+  const headers = await authHeaders();
   if (!headers.Authorization) {
     throw new Error('Please sign in with a valid Firebase account before saving changes.');
   }
@@ -196,11 +265,92 @@ async function firestoreRequest<T>(path: string, init: RequestInit = {}): Promis
   return payload as T;
 }
 
+async function firestoreRunQuery<T>(body: Record<string, unknown>): Promise<T> {
+  const headers = await authHeaders();
+  if (!headers.Authorization) {
+    throw new Error('Please sign in with a valid Firebase account before saving changes.');
+  }
+
+  const response = await fetch(`${firestoreBaseUrl}:runQuery?key=${firebaseConfig.apiKey}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || 'Firestore query failed');
+  }
+
+  return payload as T;
+}
+
 async function getCollection(collectionName: string): Promise<Record<string, unknown>[]> {
   const payload = await firestoreRequest<{ documents?: Array<{ name: string; fields?: Record<string, FirestoreValue> }> }>(
     `/${collectionName}`
   );
   return (payload.documents || []).map(decodeDocument);
+}
+
+async function queryCollection(
+  collectionName: string,
+  filters: Array<{ field: string; op: 'eq' | 'in' | 'gte' | 'lt' | 'lte' | 'gt'; value: unknown }> = [],
+  orderBy?: { field: string; ascending: boolean },
+  limitCount?: number
+): Promise<Record<string, unknown>[]> {
+  const operatorMap = {
+    eq: 'EQUAL',
+    in: 'IN',
+    gte: 'GREATER_THAN_OR_EQUAL',
+    lt: 'LESS_THAN',
+    lte: 'LESS_THAN_OR_EQUAL',
+    gt: 'GREATER_THAN',
+  } as const;
+
+  const structuredFilters: StructuredQueryFilter[] = filters.map((filter) => ({
+    fieldFilter: {
+      field: { fieldPath: filter.field },
+      op: operatorMap[filter.op],
+      value: encodeValue(filter.value),
+    },
+  }));
+
+  const structuredQuery: Record<string, unknown> = {
+    from: [{ collectionId: collectionName }],
+  };
+
+  if (structuredFilters.length === 1) {
+    structuredQuery.where = structuredFilters[0];
+  } else if (structuredFilters.length > 1) {
+    structuredQuery.where = {
+      compositeFilter: {
+        op: 'AND',
+        filters: structuredFilters,
+      },
+    };
+  }
+
+  if (orderBy) {
+    structuredQuery.orderBy = [{
+      field: { fieldPath: orderBy.field },
+      direction: orderBy.ascending ? 'ASCENDING' : 'DESCENDING',
+    }];
+  }
+
+  if (limitCount !== undefined) {
+    structuredQuery.limit = limitCount;
+  }
+
+  const payload = await firestoreRunQuery<Array<{ document?: { name: string; fields?: Record<string, FirestoreValue> } }>>({
+    structuredQuery,
+  });
+
+  return payload
+    .filter((item) => item.document)
+    .map((item) => decodeDocument(item.document!));
 }
 
 async function getDocument(collectionName: string, id: string): Promise<Record<string, unknown> | null> {
@@ -406,9 +556,15 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
   }
 
   private async executeSelect(): Promise<QueryResponse<T>> {
-    let rows = this.applyOrdering(this.applyFilters(await getCollection(this.table)));
+    let rows: Record<string, unknown>[];
+    try {
+      rows = await queryCollection(this.table, this.filters, this.orderBy, this.limitCount);
+    } catch (error) {
+      console.warn(`Falling back to client-side filtering for ${this.table}:`, error);
+      rows = this.applyOrdering(this.applyFilters(await getCollection(this.table)));
+      if (this.limitCount !== undefined) rows = rows.slice(0, this.limitCount);
+    }
     const count = this.selectOptions?.count === 'exact' ? rows.length : null;
-    if (this.limitCount !== undefined) rows = rows.slice(0, this.limitCount);
     rows = await hydrateRelations(this.table, rows, this.selected);
 
     if (this.selectOptions?.head) {
@@ -445,7 +601,12 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
   }
 
   private async executeUpdate(): Promise<QueryResponse<T>> {
-    const rows = this.applyFilters(await getCollection(this.table));
+    let rows: Record<string, unknown>[];
+    try {
+      rows = await queryCollection(this.table, this.filters);
+    } catch {
+      rows = this.applyFilters(await getCollection(this.table));
+    }
     const data = withTimestamps(this.body as Record<string, unknown>, false);
     const updateMask = Object.keys(data)
       .map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`)
@@ -464,7 +625,12 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
   }
 
   private async executeDelete(): Promise<QueryResponse<T>> {
-    const rows = this.applyFilters(await getCollection(this.table));
+    let rows: Record<string, unknown>[];
+    try {
+      rows = await queryCollection(this.table, this.filters);
+    } catch {
+      rows = this.applyFilters(await getCollection(this.table));
+    }
     await Promise.all(
       rows.map((row) =>
         firestoreRequest(`/${this.table}/${row.id}`, {
@@ -538,6 +704,69 @@ export const supabase = {
       notifyAuthListeners('SIGNED_IN', session);
       return { data: { user: session.user, session }, error: null };
     },
+    async createUserWithInvite({ email }: { email: string }) {
+      const payload = await firebaseAuthRequest<{
+        localId: string;
+        email: string;
+      }>('accounts:signUp', {
+        email,
+        password: createTemporaryPassword(),
+        returnSecureToken: true,
+      });
+
+      await firebaseAuthRequest('accounts:sendOobCode', {
+        requestType: 'PASSWORD_RESET',
+        email,
+      });
+
+      return {
+        data: {
+          user: {
+            id: payload.localId,
+            email: payload.email,
+          },
+        },
+        error: null,
+      };
+    },
+    async updatePassword({
+      email,
+      currentPassword,
+      newPassword,
+    }: {
+      email: string;
+      currentPassword: string;
+      newPassword: string;
+    }) {
+      const signInPayload = await firebaseAuthRequest<{
+        idToken: string;
+        refreshToken: string;
+        localId: string;
+        email: string;
+        expiresIn: string;
+      }>('accounts:signInWithPassword', {
+        email,
+        password: currentPassword,
+        returnSecureToken: true,
+      });
+
+      const updatePayload = await firebaseAuthRequest<{
+        idToken: string;
+        refreshToken: string;
+        localId: string;
+        email: string;
+        expiresIn: string;
+      }>('accounts:update', {
+        idToken: signInPayload.idToken,
+        password: newPassword,
+        returnSecureToken: true,
+      });
+
+      const session = toSession(updatePayload);
+      setStoredSession(session);
+      notifyAuthListeners('SIGNED_IN', session);
+      return { data: { user: session.user, session }, error: null };
+    },
     async signOut() {
       setStoredSession(null);
       notifyAuthListeners('SIGNED_OUT', null);
@@ -569,6 +798,12 @@ export interface User {
   email: string;
   role: UserRole;
   avatar_url?: string;
+  notification_preferences?: {
+    email: boolean;
+    browser: boolean;
+    reminders: boolean;
+    payments: boolean;
+  };
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -618,6 +853,22 @@ export interface Student {
   products?: StudentProduct[];
   meetings?: Meeting[];
   payments?: Payment[];
+}
+
+export interface BusinessContact {
+  id: string;
+  company_name: string;
+  contact_name: string;
+  designation?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+  address?: string;
+  contact_type: 'school' | 'college' | 'vendor' | 'partner' | 'other';
+  source: 'manual' | 'import';
+  notes?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface StudentEducation {
