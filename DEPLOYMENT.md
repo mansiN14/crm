@@ -4,7 +4,18 @@ This app deploys as:
 
 - Frontend: Vite React static build
 - Backend: Firebase Authentication and Cloud Firestore
+- Automation backend: Firebase Cloud Functions in `functions/`
 - Security: Firestore rules in `firestore.rules`
+
+Production site: https://true-axis-crm.web.app (Firebase project `true-axis-crm`).
+The frontend and Firestore rules were published on 2026-09-10. The Attendez
+Cloud Functions are not deployed: sending and webhook mapping still require
+the provider's API contract and server-side configuration.
+
+For subsequent frontend/rules releases, run the local checks below, build, and
+run `firebase deploy --only "hosting,firestore:rules" --project true-axis-crm`.
+Commit and push each release to `origin/main`; a Git push alone does not
+publish Firebase Hosting in this repository.
 
 ## 1. Firebase Project
 
@@ -27,11 +38,24 @@ For production hosting outside Firebase, add the same variables in that platform
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 - `VITE_FIREBASE_APP_ID`
 
+Firebase Functions also need server-side Attendez configuration. Do not add these as `VITE_*` values and do not commit real secrets:
+
+- `ATTENDEZ_API_URL`
+- `ATTENDEZ_API_KEY`
+- `ATTENDEZ_TEMPLATE_NAME`
+- `ATTENDEZ_TEMPLATE_BUSINESS_JATRA_STUDENT`
+- `ATTENDEZ_TEMPLATE_BUSINESS_JATRA_PARENT`
+- `ATTENDEZ_TEMPLATE_BUSINESS_JATRA_BUSINESS`
+- `ATTENDEZ_PHONE_NUMBER_ID`
+- `ATTENDEZ_WEBHOOK_SECRET`
+
 ## 3. Verify Locally
 
 ```bash
 npm install
+npm --prefix functions install
 npm run typecheck
+npm --prefix functions test
 npm run build
 npm run preview
 ```
@@ -42,6 +66,16 @@ npm run preview
 firebase login
 firebase use --add
 firebase deploy --only firestore:rules
+```
+
+## 4a. Deploy Cloud Functions
+
+After Attendez provides the final API contract and `functions/src/services/attendezService.ts` is completed:
+
+```bash
+npm --prefix functions install
+npm --prefix functions test
+firebase deploy --only functions
 ```
 
 ## 5. Deploy Frontend to Firebase Hosting

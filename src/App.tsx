@@ -32,7 +32,7 @@ function LoadingScreen() {
   );
 }
 
-function PrivateRoute({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
+function PrivateRoute({ children, managerOnly = false }: { children: React.ReactNode; managerOnly?: boolean }) {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -47,7 +47,7 @@ function PrivateRoute({ children, adminOnly = false }: { children: React.ReactNo
     return <Navigate to="/login" replace />;
   }
 
-  if (adminOnly && user.role !== 'admin') {
+  if (managerOnly && !['admin', 'counselor'].includes(user.role)) {
     return <Navigate to="/" replace />;
   }
 
@@ -95,7 +95,7 @@ function AppRoutes() {
           <Route path="/ongoing" element={<OngoingClientsPage />} />
           <Route path="/completed" element={<CompletedClientsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
-          <Route path="/users" element={<PrivateRoute adminOnly><UsersPage /></PrivateRoute>} />
+          <Route path="/users" element={<PrivateRoute managerOnly><UsersPage /></PrivateRoute>} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 

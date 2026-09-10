@@ -17,7 +17,7 @@ const firestoreBaseUrl =
   `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
 const sessionStorageKey = 'true-axis-firebase-session';
 
-export type UserRole = 'admin' | 'counselor' | 'staff';
+export type UserRole = 'admin' | 'counselor';
 
 export interface FirebaseSession {
   access_token: string;
@@ -544,6 +544,20 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
     });
   }
 
+  private getIdFilter() {
+    return this.filters.find((filter) => filter.field === 'id' && filter.op === 'eq');
+  }
+
+  private async getRowsByDocumentId() {
+    const idFilter = this.getIdFilter();
+    if (!idFilter || typeof idFilter.value !== 'string') return null;
+
+    const row = await getDocument(this.table, idFilter.value);
+    if (!row) return [];
+
+    return this.applyFilters([row]);
+  }
+
   private async execute(): Promise<QueryResponse<T>> {
     try {
       if (this.action === 'insert') return await this.executeInsert();
@@ -558,12 +572,14 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
   private async executeSelect(): Promise<QueryResponse<T>> {
     let rows: Record<string, unknown>[];
     try {
-      rows = await queryCollection(this.table, this.filters, this.orderBy, this.limitCount);
+      rows = await this.getRowsByDocumentId() ?? await queryCollection(this.table, this.filters, this.orderBy, this.limitCount);
     } catch (error) {
       console.warn(`Falling back to client-side filtering for ${this.table}:`, error);
       rows = this.applyOrdering(this.applyFilters(await getCollection(this.table)));
       if (this.limitCount !== undefined) rows = rows.slice(0, this.limitCount);
     }
+    rows = this.applyOrdering(rows);
+    if (this.limitCount !== undefined) rows = rows.slice(0, this.limitCount);
     const count = this.selectOptions?.count === 'exact' ? rows.length : null;
     rows = await hydrateRelations(this.table, rows, this.selected);
 
@@ -603,7 +619,7 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
   private async executeUpdate(): Promise<QueryResponse<T>> {
     let rows: Record<string, unknown>[];
     try {
-      rows = await queryCollection(this.table, this.filters);
+      rows = await this.getRowsByDocumentId() ?? await queryCollection(this.table, this.filters);
     } catch {
       rows = this.applyFilters(await getCollection(this.table));
     }
@@ -627,7 +643,7 @@ class FirebaseQueryBuilder<T = any> implements PromiseLike<QueryResponse<T>> {
   private async executeDelete(): Promise<QueryResponse<T>> {
     let rows: Record<string, unknown>[];
     try {
-      rows = await queryCollection(this.table, this.filters);
+      rows = await this.getRowsByDocumentId() ?? await queryCollection(this.table, this.filters);
     } catch {
       rows = this.applyFilters(await getCollection(this.table));
     }
@@ -815,6 +831,33 @@ export interface Inquiry {
   student_name: string;
   contact_number: string;
   email?: string;
+  whatsapp_number?: string;
+  whatsapp_consent?: boolean;
+  whatsapp?: {
+    consent?: boolean;
+    status?: 'pending' | 'sent' | 'failed' | 'skipped' | 'delivered' | 'read';
+    messageId?: string;
+    sentAt?: string;
+    deliveredAt?: string;
+    readAt?: string;
+    failedAt?: string;
+    skippedAt?: string;
+    error?: string;
+    phone?: string;
+    templateName?: string;
+  };
+  city?: string;
+  state?: string;
+  lead_source?: string;
+  interested_service?: string;
+  academic_level?: string;
+  preferred_destination?: string;
+  preferred_course?: string;
+  budget_range?: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  last_contacted?: string;
+  next_follow_up_date?: string;
+  next_follow_up_time?: string;
   product_type?: ProductType;
   student_grade?: string;
   reference_source?: 'earlier_student' | 'bni' | 'outside';
@@ -825,7 +868,22 @@ export interface Inquiry {
   programs?: string[];
   degree_level?: 'ug' | 'pg' | 'phd';
   attendance: 'yes' | 'no' | 'pending';
-  status: 'new' | 'attended' | 'ongoing' | 'completed' | 'no_show';
+  status:
+    | 'new'
+    | 'contacted'
+    | 'follow_up_required'
+    | 'counselling_scheduled'
+    | 'counselling_completed'
+    | 'assessment_pending'
+    | 'program_selected'
+    | 'application_started'
+    | 'converted'
+    | 'lost'
+    | 'not_interested'
+    | 'attended'
+    | 'ongoing'
+    | 'completed'
+    | 'no_show';
   assigned_counselor_id?: string;
   notes?: string;
   created_at: string;
@@ -998,6 +1056,7 @@ export interface Reminder {
   title: string;
   description?: string;
   reminder_type: 'meeting' | 'follow_up' | 'payment' | 'task';
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
   status: 'pending' | 'completed' | 'dismissed';
   assigned_to?: string;
   created_at: string;

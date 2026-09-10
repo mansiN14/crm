@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Calendar, CheckCircle2, GraduationCap, Mail, Phone, UserPlus, Users } from 'lucide-react';
+import { ArrowLeft, Calendar, CheckCircle2, GraduationCap, Mail, MessageCircle, Phone, UserPlus, Users } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import type { Inquiry, Student } from '../../lib/supabase';
 import { PRODUCT_CATALOG } from '../../lib/products';
@@ -33,6 +33,26 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}`}>
       {config.label}
+    </span>
+  );
+}
+
+function WhatsAppStatusBadge({ inquiry }: { inquiry: Inquiry }) {
+  const status = inquiry.whatsapp?.status || (inquiry.whatsapp_consent ? 'pending' : 'skipped');
+  const config: Record<string, { bg: string; text: string; label: string }> = {
+    pending: { bg: 'bg-amber-100', text: 'text-amber-800', label: 'Pending' },
+    sent: { bg: 'bg-green-100', text: 'text-green-700', label: 'Sent' },
+    delivered: { bg: 'bg-sky-100', text: 'text-sky-700', label: 'Delivered' },
+    read: { bg: 'bg-violet-100', text: 'text-violet-700', label: 'Read' },
+    failed: { bg: 'bg-red-100', text: 'text-red-700', label: 'Failed' },
+    skipped: { bg: 'bg-gray-100', text: 'text-gray-600', label: inquiry.whatsapp_consent ? 'Skipped' : 'No Consent' },
+  };
+  const selected = config[status] || config.skipped;
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${selected.bg} ${selected.text}`}>
+      <MessageCircle size={13} />
+      {selected.label}
     </span>
   );
 }
@@ -155,7 +175,7 @@ export function InquiryDetailPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
         <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-3">
             <Calendar className="text-maroon-600" size={20} />
@@ -192,6 +212,15 @@ export function InquiryDetailPage() {
             </div>
           </div>
         </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-3">
+            <MessageCircle className="text-green-600" size={20} />
+            <div>
+              <p className="text-sm text-gray-500">WhatsApp</p>
+              <div className="mt-1"><WhatsAppStatusBadge inquiry={inquiry} /></div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -211,6 +240,14 @@ export function InquiryDetailPage() {
           <h2 className="text-lg font-semibold text-navy-900">Contact</h2>
           <div className="mt-6 space-y-5">
             <DetailItem label="Email" value={formatValue(inquiry.email)} />
+            <DetailItem label="WhatsApp Number" value={formatValue(inquiry.whatsapp_number)} />
+            <DetailItem label="WhatsApp Consent" value={inquiry.whatsapp_consent ? 'Yes' : 'No'} />
+            {inquiry.whatsapp?.messageId && (
+              <DetailItem label="WhatsApp Message ID" value={inquiry.whatsapp.messageId} />
+            )}
+            {inquiry.whatsapp?.error && (
+              <DetailItem label="WhatsApp Note" value={inquiry.whatsapp.error} />
+            )}
             <DetailItem label="Attendance" value={inquiry.attendance === 'yes' ? 'Yes' : inquiry.attendance === 'no' ? 'No' : 'Pending'} />
             <div>
               <p className="text-sm font-medium text-gray-500">Quick Contact</p>

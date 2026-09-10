@@ -1,8 +1,8 @@
 import { useEffect, useState, type ElementType } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/useAuth';
-import type { Meeting, Reminder, Payment, ActivityLog } from '../../lib/supabase';
-import { getDueStatus, toDateKey } from '../../lib/dateUtils';
+import type { Meeting, Reminder, Payment, ActivityLog, Inquiry } from '../../lib/supabase';
+import { formatDateLabel, getDueStatus, toDateKey } from '../../lib/dateUtils';
 import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import {
   Users,
@@ -20,11 +20,16 @@ import {
   IndianRupee,
   UserRoundCheck,
   ClipboardList,
+  WalletCards,
+  Target,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 interface DashboardStats {
   totalInquiries: number;
+  newLeads: number;
+  uncontactedLeads: number;
+  activeLeads: number;
   attendanceToday: number;
   ongoingClients: number;
   completedClients: number;
@@ -34,9 +39,28 @@ interface DashboardStats {
   totalRevenue: number;
   overduePayments: number;
   overdueFollowUps: number;
+  leadFollowUpsToday: number;
+  overdueLeadFollowUps: number;
+  applicationsInProgress: number;
+  offersReceived: number;
   monthlyInquiryTrend: number | null;
   monthlyCompletedTrend: number | null;
   monthlyRevenueTrend: number | null;
+  revenueThisMonth: number;
+  overduePaymentAmount: number;
+  dueSoonPaymentAmount: number;
+  collectionRate: number;
+}
+
+interface PriorityItem {
+  id: string;
+  title: string;
+  meta: string;
+  label: string;
+  to: string;
+  icon: ElementType;
+  tone: string;
+  rank: number;
 }
 
 export function DashboardPage() {
@@ -44,6 +68,9 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<DashboardStats>({
     totalInquiries: 0,
+    newLeads: 0,
+    uncontactedLeads: 0,
+    activeLeads: 0,
     attendanceToday: 0,
     ongoingClients: 0,
     completedClients: 0,
@@ -53,17 +80,35 @@ export function DashboardPage() {
     totalRevenue: 0,
     overduePayments: 0,
     overdueFollowUps: 0,
+    leadFollowUpsToday: 0,
+    overdueLeadFollowUps: 0,
+    applicationsInProgress: 0,
+    offersReceived: 0,
     monthlyInquiryTrend: null,
     monthlyCompletedTrend: null,
     monthlyRevenueTrend: null,
+    revenueThisMonth: 0,
+    overduePaymentAmount: 0,
+    dueSoonPaymentAmount: 0,
+    collectionRate: 0,
   });
   const [recentActivities, setRecentActivities] = useState<ActivityLog[]>([]);
   const [upcomingReminders, setUpcomingReminders] = useState<Reminder[]>([]);
   const [todaysMeetings, setTodaysMeetings] = useState<Meeting[]>([]);
   const [recentPayments, setRecentPayments] = useState<Payment[]>([]);
+  const [priorityItems, setPriorityItems] = useState<PriorityItem[]>([]);
 
   useEffect(() => {
     fetchDashboardData();
+
+    const refreshInterval = window.setInterval(fetchDashboardData, 60_000);
+    const refreshOnFocus = () => fetchDashboardData();
+    window.addEventListener('focus', refreshOnFocus);
+
+    return () => {
+      window.clearInterval(refreshInterval);
+      window.removeEventListener('focus', refreshOnFocus);
+    };
   }, []);
 
   const fetchDashboardData = async () => {
@@ -86,11 +131,25 @@ export function DashboardPage() {
         supabase.from('activity_logs').select('*, user:users(*)').order('created_at', { ascending: false }).limit(10),
       ]);
 
-      const students = (studentsRes.data || []) as Array<{ status: string; updated_at?: string }>;
+      const students = (studentsRes.data || []) as Array<{ id: string; status: string; updated_at?: string }>;
       const meetings = (meetingsRes.data || []) as Meeting[];
       const reminders = (remindersRes.data || []) as Reminder[];
       const payments = (paymentsRes.data || []) as Payment[];
-      const inquiries = (inquiriesRes.data || []) as Array<{ created_at?: string; inquiry_date?: string }>;
+      const inquiries = (inquiriesRes.data || []) as Inquiry[];
+      const activities = (activitiesRes.data || []) as ActivityLog[];
+      const studentProducts =
+        ((await supabase.from('student_products').select('*')).data || []) as Array<{ application_status?: string }>;
+      const existingEntityIds: Record<string, Set<string>> = {
+        inquiry: new Set(inquiries.map((inquiry) => inquiry.id)),
+        student: new Set(students.map((student) => student.id).filter(Boolean) as string[]),
+        meeting: new Set(meetings.map((meeting) => meeting.id)),
+        reminder: new Set(reminders.map((reminder) => reminder.id)),
+        payment: new Set(payments.map((payment) => payment.id)),
+      };
+      const visibleActivities = activities.filter((activity) => {
+        if (!activity.entity_id) return true;
+        return existingEntityIds[activity.entity_type]?.has(activity.entity_id) ?? true;
+      });
 
       const todaysMeetingsFiltered = meetings.filter(
         (m) => m.meeting_date === today
@@ -108,6 +167,24 @@ export function DashboardPage() {
         (r) => new Date(r.reminder_date) <= new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
       );
       const overdueFollowUps = reminders.filter((r) => getDueStatus(r.reminder_date) === 'overdue');
+      const activeLeadStatuses = [
+        'new',
+        'contacted',
+        'follow_up_required',
+        'counselling_scheduled',
+        'counselling_completed',
+        'assessment_pending',
+        'program_selected',
+        'application_started',
+        'attended',
+        'ongoing',
+      ];
+      const leadFollowUpsToday = inquiries.filter((inquiry) =>
+        inquiry.next_follow_up_date && getDueStatus(inquiry.next_follow_up_date) === 'today'
+      );
+      const overdueLeadFollowUps = inquiries.filter((inquiry) =>
+        inquiry.next_follow_up_date && getDueStatus(inquiry.next_follow_up_date) === 'overdue'
+      );
 
       const totalRevenue = payments
         .filter((p) => p.status === 'paid')
@@ -141,24 +218,112 @@ export function DashboardPage() {
       const previousRevenue = payments
         .filter((payment) => payment.status === 'paid' && (payment.payment_date || '').startsWith(previousMonth))
         .reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0);
+      const overduePaymentAmount = overduePayments.reduce(
+        (sum, payment) => sum + Math.max(Number(payment.total_amount || 0) - Number(payment.amount_paid || 0), 0),
+        0
+      );
+      const dueSoonPaymentAmount = pendingPayments.reduce(
+        (sum, payment) => sum + Math.max(Number(payment.total_amount || 0) - Number(payment.amount_paid || 0), 0),
+        0
+      );
+      const expectedPaymentAmount = payments.reduce((sum, payment) => sum + Number(payment.total_amount || 0), 0);
+      const collectedPaymentAmount = payments.reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0);
+      const collectionRate = expectedPaymentAmount > 0
+        ? Math.round((collectedPaymentAmount / expectedPaymentAmount) * 100)
+        : 0;
+
+      const paymentPriorityItems: PriorityItem[] = overduePayments
+        .map((payment) => ({
+          id: `payment-${payment.id}`,
+          title: payment.student?.student_name || `Payment #${payment.payment_number}`,
+          meta: `₹${Math.max(Number(payment.total_amount || 0) - Number(payment.amount_paid || 0), 0).toLocaleString()} overdue`,
+          label: formatDateLabel(payment.due_date),
+          to: '/payments',
+          icon: CreditCard,
+          tone: 'border-red-100 bg-red-50 text-red-700',
+          rank: 1,
+        }));
+      const reminderPriorityItems: PriorityItem[] = reminders
+        .filter((reminder) => ['overdue', 'today'].includes(getDueStatus(reminder.reminder_date)))
+        .map((reminder) => {
+          const status = getDueStatus(reminder.reminder_date);
+          return {
+            id: `reminder-${reminder.id}`,
+            title: reminder.title,
+            meta: reminder.student?.student_name || reminder.reminder_type.replace('_', ' '),
+            label: status === 'overdue' ? 'Overdue' : 'Today',
+            to: '/reminders',
+            icon: Bell,
+            tone: status === 'overdue'
+              ? 'border-red-100 bg-red-50 text-red-700'
+              : 'border-amber-100 bg-amber-50 text-amber-700',
+            rank: status === 'overdue' ? 2 : 4,
+          };
+        });
+      const inquiryPriorityItems: PriorityItem[] = inquiries
+        .filter((inquiry) =>
+          inquiry.next_follow_up_date && ['overdue', 'today'].includes(getDueStatus(inquiry.next_follow_up_date))
+        )
+        .map((inquiry) => {
+          const status = getDueStatus(inquiry.next_follow_up_date);
+          return {
+            id: `inquiry-${inquiry.id}`,
+            title: inquiry.student_name,
+            meta: inquiry.interested_service || inquiry.preferred_course || 'Lead follow-up',
+            label: status === 'overdue' ? 'Overdue' : 'Today',
+            to: `/inquiries/${inquiry.id}`,
+            icon: Users,
+            tone: status === 'overdue'
+              ? 'border-red-100 bg-red-50 text-red-700'
+              : 'border-blue-100 bg-blue-50 text-blue-700',
+            rank: status === 'overdue' ? 3 : 5,
+          };
+        });
+      const meetingPriorityItems: PriorityItem[] = todaysMeetingsFiltered.map((meeting) => ({
+        id: `meeting-${meeting.id}`,
+        title: meeting.student?.student_name || 'Student meeting',
+        meta: `Meeting #${meeting.meeting_number}`,
+        label: meeting.meeting_time || 'Today',
+        to: meeting.student_id ? `/students/${meeting.student_id}` : '/meetings',
+        icon: Calendar,
+        tone: 'border-emerald-100 bg-emerald-50 text-emerald-700',
+        rank: 6,
+      }));
 
       setStats({
         totalInquiries: inquiries.length,
+        newLeads: inquiries.filter((inquiry) => inquiry.status === 'new').length,
+        uncontactedLeads: inquiries.filter((inquiry) => inquiry.status === 'new' && !inquiry.last_contacted).length,
+        activeLeads: inquiries.filter((inquiry) => activeLeadStatuses.includes(inquiry.status)).length,
         attendanceToday: todaysMeetingsFiltered.length,
         ongoingClients: students.filter((s) => s.status === 'ongoing').length,
         completedClients: students.filter((s) => s.status === 'completed').length,
         upcomingMeetings,
         paymentsDue: pendingPayments.length,
-        followUpsDue: dueReminders.length,
+        followUpsDue: dueReminders.length + leadFollowUpsToday.length,
         totalRevenue,
         overduePayments: overduePayments.length,
-        overdueFollowUps: overdueFollowUps.length,
+        overdueFollowUps: overdueFollowUps.length + overdueLeadFollowUps.length,
+        leadFollowUpsToday: leadFollowUpsToday.length,
+        overdueLeadFollowUps: overdueLeadFollowUps.length,
+        applicationsInProgress: studentProducts.filter((product) =>
+          String(product.application_status || '').toLowerCase().includes('preparation') ||
+          String(product.application_status || '').toLowerCase().includes('started') ||
+          String(product.application_status || '').toLowerCase().includes('review')
+        ).length,
+        offersReceived: studentProducts.filter((product) =>
+          String(product.application_status || '').toLowerCase().includes('offer')
+        ).length,
         monthlyInquiryTrend: trendFor(currentInquiries, previousInquiries),
         monthlyCompletedTrend: trendFor(currentCompleted, previousCompleted),
         monthlyRevenueTrend: trendFor(currentRevenue, previousRevenue),
+        revenueThisMonth: currentRevenue,
+        overduePaymentAmount,
+        dueSoonPaymentAmount,
+        collectionRate,
       });
 
-      setRecentActivities(activitiesRes.data || []);
+      setRecentActivities(visibleActivities.slice(0, 10));
       setUpcomingReminders(
         [...reminders]
           .sort((first, second) =>
@@ -169,7 +334,22 @@ export function DashboardPage() {
           .slice(0, 5)
       );
       setTodaysMeetings(todaysMeetingsFiltered);
-      setRecentPayments(payments.filter(p => p.status === 'paid').slice(0, 5));
+      setRecentPayments(
+        payments
+          .filter(p => p.status === 'paid')
+          .sort((first, second) => (second.payment_date || '').localeCompare(first.payment_date || ''))
+          .slice(0, 5)
+      );
+      setPriorityItems(
+        [
+          ...paymentPriorityItems,
+          ...reminderPriorityItems,
+          ...inquiryPriorityItems,
+          ...meetingPriorityItems,
+        ]
+          .sort((first, second) => first.rank - second.rank)
+          .slice(0, 7)
+      );
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
     } finally {
@@ -279,6 +459,27 @@ export function DashboardPage() {
           link="/inquiries"
         />
         <StatCard
+          title="New Leads"
+          value={stats.newLeads}
+          icon={Users}
+          color="blue"
+          link="/inquiries"
+        />
+        <StatCard
+          title="Uncontacted Leads"
+          value={stats.uncontactedLeads}
+          icon={AlertTriangle}
+          color="orange"
+          link="/inquiries"
+        />
+        <StatCard
+          title="Active Leads"
+          value={stats.activeLeads}
+          icon={UserRoundCheck}
+          color="navy"
+          link="/inquiries"
+        />
+        <StatCard
           title="Attendance Today"
           value={stats.attendanceToday}
           icon={Calendar}
@@ -301,11 +502,11 @@ export function DashboardPage() {
           link="/completed"
         />
         <StatCard
-          title="Upcoming Meetings"
-          value={stats.upcomingMeetings}
-          icon={Calendar}
+          title="Applications In Progress"
+          value={stats.applicationsInProgress}
+          icon={ClipboardList}
           color="purple"
-          link="/meetings"
+          link="/students"
         />
         <StatCard
           title="Payments Due"
@@ -313,6 +514,13 @@ export function DashboardPage() {
           icon={CreditCard}
           color="orange"
           link="/payments"
+        />
+        <StatCard
+          title="Offers Received"
+          value={stats.offersReceived}
+          icon={CheckCircle2}
+          color="green"
+          link="/students"
         />
         <StatCard
           title="Follow Ups Due"
@@ -330,12 +538,67 @@ export function DashboardPage() {
         />
       </div>
 
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+        <section className="rounded-lg border border-gray-200 bg-white shadow-sm">
+          <PanelHeader icon={Target} title="Today's Priority Queue" actionLabel="Open reports" to="/reports" />
+          <div className="p-4 sm:p-5">
+            {priorityItems.length === 0 ? (
+              <EmptyState
+                icon={Target}
+                message="Nothing urgent in the queue"
+                actionLabel="Review leads"
+                to="/inquiries"
+              />
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {priorityItems.map((item) => (
+                  <Link
+                    key={item.id}
+                    to={item.to}
+                    className="group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3 first:pt-0 last:pb-0"
+                  >
+                    <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${item.tone}`}>
+                      <item.icon size={18} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-navy-900">{item.title}</span>
+                      <span className="mt-0.5 block truncate text-xs text-gray-500">{item.meta}</span>
+                    </span>
+                    <span className="flex items-center gap-2 text-right">
+                      <span className="max-w-[86px] truncate rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
+                        {item.label}
+                      </span>
+                      <ArrowRight size={15} className="shrink-0 text-gray-400 transition group-hover:translate-x-0.5 group-hover:text-maroon-700" />
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-gray-200 bg-white shadow-sm">
+          <PanelHeader icon={WalletCards} title="Payment Health" actionLabel="All payments" to="/payments" />
+          <div className="grid grid-cols-2 divide-x divide-y divide-gray-100">
+            <FinanceMetric label="Collected this month" value={`₹${compactNumber(stats.revenueThisMonth)}`} tone="text-emerald-700" />
+            <FinanceMetric label="Collection rate" value={`${stats.collectionRate}%`} tone="text-blue-700" />
+            <FinanceMetric label="Overdue amount" value={`₹${compactNumber(stats.overduePaymentAmount)}`} tone="text-red-700" />
+            <FinanceMetric label="Due in 7 days" value={`₹${compactNumber(stats.dueSoonPaymentAmount)}`} tone="text-amber-700" />
+          </div>
+        </section>
+      </div>
+
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
         <section className="rounded-lg border border-gray-200 bg-white shadow-sm">
           <PanelHeader icon={Calendar} title="Today's Meetings" actionLabel="All meetings" to="/meetings" />
           <div className="p-4 sm:p-5">
             {todaysMeetings.length === 0 ? (
-              <EmptyState icon={Calendar} message="No meetings scheduled for today" />
+              <EmptyState
+                icon={Calendar}
+                message="No meetings scheduled for today"
+                actionLabel="Schedule meeting"
+                to="/meetings"
+              />
             ) : (
               <div className="space-y-3">
                 {todaysMeetings.map((meeting) => (
@@ -375,7 +638,12 @@ export function DashboardPage() {
           <PanelHeader icon={Bell} title="Upcoming Reminders" actionLabel="Open reminders" to="/reminders" />
           <div className="p-4 sm:p-5">
             {upcomingReminders.length === 0 ? (
-              <EmptyState icon={Bell} message="No upcoming reminders" />
+              <EmptyState
+                icon={Bell}
+                message="No upcoming reminders"
+                actionLabel="Create reminder"
+                to="/reminders"
+              />
             ) : (
               <div className="space-y-3">
                 {upcomingReminders.map((reminder) => (
@@ -436,7 +704,12 @@ export function DashboardPage() {
           <PanelHeader icon={TrendingUp} title="Recent Activities" />
           <div className="p-4 sm:p-5">
             {recentActivities.length === 0 ? (
-              <EmptyState icon={TrendingUp} message="No recent activities" />
+              <EmptyState
+                icon={TrendingUp}
+                message="No recent activities"
+                actionLabel="Open dashboard"
+                to="/"
+              />
             ) : (
               <div className="space-y-0">
                 {recentActivities.map((activity, index) => (
@@ -462,7 +735,12 @@ export function DashboardPage() {
           <PanelHeader icon={CreditCard} title="Recent Payments" actionLabel="All payments" to="/payments" />
           <div className="p-4 sm:p-5">
             {recentPayments.length === 0 ? (
-              <EmptyState icon={CreditCard} message="No recent payments" />
+              <EmptyState
+                icon={CreditCard}
+                message="No recent payments"
+                actionLabel="Record payment"
+                to="/payments"
+              />
             ) : (
               <div className="space-y-3">
                 {recentPayments.map((payment) => (
@@ -524,6 +802,23 @@ function HeroMetric({
   );
 }
 
+function FinanceMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string | number;
+  tone: string;
+}) {
+  return (
+    <div className="flex min-h-[118px] flex-col justify-between p-4 sm:p-5">
+      <p className="text-sm font-medium text-gray-500">{label}</p>
+      <p className={`break-words text-2xl font-bold ${tone}`}>{value}</p>
+    </div>
+  );
+}
+
 function PanelHeader({
   icon: Icon,
   title,
@@ -553,13 +848,32 @@ function PanelHeader({
   );
 }
 
-function EmptyState({ icon: Icon, message }: { icon: ElementType; message: string }) {
+function EmptyState({
+  icon: Icon,
+  message,
+  actionLabel,
+  to,
+}: {
+  icon: ElementType;
+  message: string;
+  actionLabel?: string;
+  to?: string;
+}) {
   return (
     <div className="flex min-h-[154px] flex-col items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 text-center">
       <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-white text-gray-400 shadow-sm">
         <Icon size={22} />
       </div>
       <p className="text-sm font-medium text-gray-500">{message}</p>
+      {to && actionLabel && (
+        <Link
+          to={to}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-maroon-700 shadow-sm transition hover:bg-maroon-50"
+        >
+          {actionLabel}
+          <ArrowRight size={14} />
+        </Link>
+      )}
     </div>
   );
 }

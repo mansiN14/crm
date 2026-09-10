@@ -14,6 +14,13 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
+    function isManager() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && currentUser().data.role in ['admin', 'counselor']
+        && currentUser().data.is_active == true;
+    }
+
     function isAdmin() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
@@ -22,11 +29,19 @@ service cloud.firestore {
     }
 
     function validUserRole() {
-      return request.resource.data.role in ['admin', 'counselor', 'staff'];
+      return request.resource.data.role in ['admin', 'counselor'];
     }
 
     function validSelfSignupRole() {
-      return request.resource.data.role in ['counselor', 'staff'];
+      return request.resource.data.role == 'counselor';
+    }
+
+    function protectedWhatsAppFieldsAbsent() {
+      return !request.resource.data.keys().hasAny(['whatsapp']);
+    }
+
+    function protectedWhatsAppFieldsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['whatsapp']);
     }
 
     function ownProfileFieldsOnly() {
@@ -39,20 +54,20 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read: if signedIn();
+      allow read: if isManager() || isOwnUserDocument(userId);
       allow create: if (isOwnUserDocument(userId) && validSelfSignupRole()) || (isAdmin() && validUserRole());
       allow update: if (isAdmin() && validUserRole()) || (isOwnUserDocument(userId) && ownProfileFieldsOnly());
       allow delete: if isAdmin() && request.auth.uid != userId;
     }
 
     match /activity_logs/{documentId} {
-      allow read: if signedIn();
-      allow create: if signedIn();
+      allow read: if isManager();
+      allow create: if isManager();
       allow update, delete: if false;
     }
 
     match /{collection}/{documentId} {
-      allow read, create, update: if signedIn()
+      allow read: if isManager()
         && collection in [
           'inquiries',
           'students',
@@ -64,6 +79,34 @@ service cloud.firestore {
           'quotations',
           'payments'
         ];
+
+      allow create: if isManager()
+        && collection in [
+          'inquiries',
+          'students',
+          'business_contacts',
+          'student_education',
+          'student_products',
+          'meetings',
+          'reminders',
+          'quotations',
+          'payments'
+        ]
+        && (collection != 'inquiries' || protectedWhatsAppFieldsAbsent());
+
+      allow update: if isManager()
+        && collection in [
+          'inquiries',
+          'students',
+          'business_contacts',
+          'student_education',
+          'student_products',
+          'meetings',
+          'reminders',
+          'quotations',
+          'payments'
+        ]
+        && (collection != 'inquiries' || protectedWhatsAppFieldsUnchanged());
 
       allow delete: if isAdmin()
         && collection in [

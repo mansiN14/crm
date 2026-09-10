@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import type { Reminder, Student } from '../../lib/supabase';
+import { LEAD_PRIORITIES, type LeadPriority } from '../../lib/crm';
 import { getDueStatus } from '../../lib/dateUtils';
 import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import { Search, Bell, Calendar, Clock, CheckCircle, X, Plus, ArrowRight } from 'lucide-react';
@@ -61,6 +62,11 @@ export function RemindersPage() {
     reminder.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     reminder.student?.student_name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const overdueReminders = filteredReminders.filter((reminder) => getDueStatus(reminder.reminder_date) === 'overdue');
+  const todayReminders = filteredReminders.filter((reminder) => getDueStatus(reminder.reminder_date) === 'today');
+  const upcomingReminders = filteredReminders.filter((reminder) =>
+    ['soon', 'upcoming'].includes(getDueStatus(reminder.reminder_date))
+  );
 
   const handleStatusChange = async (id: string, status: 'completed' | 'dismissed') => {
     await supabase.from('reminders').update({ status }).eq('id', id);
@@ -112,16 +118,29 @@ export function RemindersPage() {
         </div>
       </div>
 
-      <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <FollowUpSummary label="Overdue" value={overdueReminders.length} className="border-red-200 bg-red-50 text-red-700" />
+        <FollowUpSummary label="Today" value={todayReminders.length} className="border-yellow-200 bg-yellow-50 text-yellow-800" />
+        <FollowUpSummary label="Upcoming" value={upcomingReminders.length} className="border-gray-200 bg-white text-navy-900" />
+      </div>
+
+      <div className="space-y-6">
         {filteredReminders.length === 0 ? (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center">
             <Bell className="mx-auto text-gray-300 mb-4" size={48} />
             <p className="text-gray-500">No reminders found</p>
           </div>
         ) : (
-          filteredReminders.map((reminder) => {
-            const dueStatus = getDueStatus(reminder.reminder_date);
-            return (
+          [
+            { title: 'Overdue', items: overdueReminders },
+            { title: 'Today', items: todayReminders },
+            { title: 'Upcoming', items: upcomingReminders },
+          ].filter((section) => section.items.length > 0).map((section) => (
+            <section key={section.title} className="space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">{section.title}</h2>
+              {section.items.map((reminder) => {
+                const dueStatus = getDueStatus(reminder.reminder_date);
+                return (
             <article
               key={reminder.id}
               className={`rounded-xl border p-6 shadow-sm ${
@@ -183,6 +202,7 @@ export function RemindersPage() {
                   }`}>
                     {reminder.reminder_type.replace('_', ' ')}
                   </span>
+                  <PriorityBadge priority={(reminder.priority || 'medium') as LeadPriority} />
                   {reminder.status === 'pending' && (
                     <DueStatusBadge status={dueStatus} />
                   )}
@@ -207,8 +227,10 @@ export function RemindersPage() {
                 </div>
               </div>
             </article>
-          );
-          })
+                );
+              })}
+            </section>
+          ))
         )}
       </div>
 
@@ -248,6 +270,30 @@ function DueStatusBadge({ status }: { status: ReturnType<typeof getDueStatus> })
   );
 }
 
+function PriorityBadge({ priority }: { priority: LeadPriority }) {
+  const styles: Record<LeadPriority, string> = {
+    low: 'bg-gray-100 text-gray-600',
+    medium: 'bg-blue-50 text-blue-700',
+    high: 'bg-orange-100 text-orange-700',
+    urgent: 'bg-red-100 text-red-700',
+  };
+
+  return (
+    <span className={`px-3 py-1 rounded-full text-xs font-medium ${styles[priority]}`}>
+      {LEAD_PRIORITIES.find((item) => item.value === priority)?.label || 'Medium'}
+    </span>
+  );
+}
+
+function FollowUpSummary({ label, value, className }: { label: string; value: number; className: string }) {
+  return (
+    <div className={`rounded-xl border p-4 shadow-sm ${className}`}>
+      <p className="text-sm font-medium">{label}</p>
+      <p className="mt-1 text-3xl font-bold">{value}</p>
+    </div>
+  );
+}
+
 function ReminderModal({
   students,
   onClose,
@@ -263,6 +309,7 @@ function ReminderModal({
     reminder_date: '',
     reminder_time: '09:00',
     reminder_type: 'task' as const,
+    priority: 'medium' as LeadPriority,
     student_id: '',
   });
   const [saving, setSaving] = useState(false);
@@ -318,6 +365,18 @@ function ReminderModal({
               <option value="meeting">Meeting</option>
               <option value="follow_up">Follow Up</option>
               <option value="payment">Payment</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Priority</label>
+            <select
+              value={formData.priority}
+              onChange={(e) => setFormData({ ...formData, priority: e.target.value as LeadPriority })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500"
+            >
+              {LEAD_PRIORITIES.map((priority) => (
+                <option key={priority.value} value={priority.value}>{priority.label}</option>
+              ))}
             </select>
           </div>
           <div>

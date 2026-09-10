@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { supabase } from '../../lib/supabase';
-import type { Inquiry, ProductType, Student, User } from '../../lib/supabase';
+import type { Inquiry, ProductType, Student, StudentProduct, User } from '../../lib/supabase';
 import { PRODUCT_CATALOG, getProductLabel } from '../../lib/products';
 import {
   Plus,
@@ -16,7 +16,7 @@ import {
   MoreVertical,
   ArrowRight,
 } from 'lucide-react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 type StudentDraft = Student & {
   product_type?: ProductType | '';
@@ -106,8 +106,10 @@ export function StudentsPage() {
   const [editingStudent, setEditingStudent] = useState<StudentDraft | null>(null);
   const [counselors, setCounselors] = useState<User[]>([]);
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const inquiryId = searchParams.get('inquiry_id');
   const editStudentId = searchParams.get('edit_student_id');
+  const returnTo = searchParams.get('return_to');
 
   useEffect(() => {
     fetchStudents();
@@ -134,11 +136,16 @@ export function StudentsPage() {
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete('inquiry_id');
     nextParams.delete('edit_student_id');
+    nextParams.delete('return_to');
     setSearchParams(nextParams, { replace: true });
   };
 
   const closeStudentModal = () => {
     setShowModal(false);
+    if (returnTo) {
+      navigate(returnTo, { replace: true });
+      return;
+    }
     clearModalParams();
   };
 
@@ -506,6 +513,10 @@ export function StudentsPage() {
             fetchStudents();
             fetchStudentProducts();
             fetchInquiries();
+            if (returnTo) {
+              navigate(returnTo, { replace: true });
+              return;
+            }
             clearModalParams();
           }}
         />
@@ -514,7 +525,7 @@ export function StudentsPage() {
   );
 }
 
-function StudentModal({
+export function StudentModal({
   student,
   inquiries,
   counselors,
@@ -591,6 +602,38 @@ function StudentModal({
   const [activeTab, setActiveTab] = useState<'personal' | 'education'>('personal');
   const schoolGradeSelected = isSchoolGrade(String(education.current_grade || ''));
   const visibleSchoolPercentageFields = getVisibleSchoolPercentageFields(String(education.current_grade || ''));
+
+  useEffect(() => {
+    if (!student?.id) return;
+
+    let cancelled = false;
+
+    const loadSavedProduct = async () => {
+      const { data, error } = await supabase
+        .from<StudentProduct>('student_products')
+        .select('*')
+        .eq('student_id', student.id)
+        .order('created_at', { ascending: false })
+        .maybeSingle();
+
+      if (cancelled || error || !data) return;
+
+      setFormData((current) => ({
+        ...current,
+        product_type: data.product_type || current.product_type,
+        countries: data.countries || current.countries,
+        colleges: data.colleges || (data.university_name ? [data.university_name] : current.colleges),
+        programs: data.programs || (data.course_name ? [data.course_name] : current.programs),
+        degree_level: data.degree_level || current.degree_level,
+      }));
+    };
+
+    loadSavedProduct();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [student?.id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

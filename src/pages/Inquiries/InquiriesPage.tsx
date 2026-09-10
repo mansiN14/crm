@@ -1,9 +1,22 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/useAuth';
-import type { Inquiry, User } from '../../lib/supabase';
+import type { Inquiry, ProductType, User } from '../../lib/supabase';
 import { PRODUCT_CATALOG } from '../../lib/products';
 import { ADMISSION_COUNTRIES, ADMISSION_PROGRAMS, DEGREE_LEVELS, getCollegesForCountries } from '../../lib/admissions';
+import {
+  ACADEMIC_LEVELS,
+  BUDGET_RANGES,
+  LEAD_PRIORITIES,
+  LEAD_SOURCES,
+  LEAD_STATUSES,
+  getLeadStatusLabel,
+  isValidEmail,
+  isValidPhone,
+  normalizePhone,
+  type LeadPriority,
+  type LeadStatus,
+} from '../../lib/crm';
 import { daysBetween } from '../../lib/dateUtils';
 import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import {
@@ -17,6 +30,7 @@ import {
   Calendar,
   Phone,
   Mail,
+  MessageCircle,
   Users,
   CheckCircle2,
   Clock,
@@ -30,9 +44,13 @@ export function InquiriesPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [priorityFilter, setPriorityFilter] = useState<string>('all');
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [showModal, setShowModal] = useState(false);
   const [editingInquiry, setEditingInquiry] = useState<Inquiry | null>(null);
   const [counselors, setCounselors] = useState<User[]>([]);
+  const [convertingInquiryId, setConvertingInquiryId] = useState<string | null>(null);
+  const [conversionMessage, setConversionMessage] = useState('');
 
   useEffect(() => {
     fetchInquiries();
@@ -64,12 +82,22 @@ export function InquiriesPage() {
   };
 
   const filteredInquiries = inquiries.filter((inquiry) => {
+    const searchable = [
+      inquiry.student_name,
+      inquiry.contact_number,
+      inquiry.whatsapp_number,
+      inquiry.email,
+      inquiry.city,
+      inquiry.preferred_course,
+      inquiry.lead_source,
+    ].filter(Boolean).join(' ').toLowerCase();
     const matchesSearch =
-      inquiry.student_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      inquiry.contact_number.includes(searchQuery) ||
-      inquiry.email?.toLowerCase().includes(searchQuery.toLowerCase());
+      searchable.includes(searchQuery.toLowerCase()) ||
+      normalizePhone(inquiry.contact_number || '').includes(normalizePhone(searchQuery));
     const matchesStatus = statusFilter === 'all' || inquiry.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    const matchesPriority = priorityFilter === 'all' || (inquiry.priority || 'medium') === priorityFilter;
+    const matchesSource = sourceFilter === 'all' || inquiry.lead_source === sourceFilter;
+    return matchesSearch && matchesStatus && matchesPriority && matchesSource;
   });
 
   const handleDelete = async (id: string) => {
@@ -78,7 +106,91 @@ export function InquiriesPage() {
     fetchInquiries();
   };
 
-  const canDelete = user?.role === 'admin';
+  const handleQuickCreateStudent = async (inquiry: Inquiry) => {
+    if (convertingInquiryId) return;
+
+    setConvertingInquiryId(inquiry.id);
+    setConversionMessage('');
+
+    try {
+      const { data: existingStudent, error: existingStudentError } = await supabase
+        .from('students')
+        .select('id')
+        .eq('inquiry_id', inquiry.id)
+        .maybeSingle();
+
+      if (existingStudentError) throw existingStudentError;
+
+      if (existingStudent?.id) {
+        navigate(`/students/${existingStudent.id}`);
+        return;
+      }
+
+      const { data: student, error: studentError } = await supabase
+        .from('students')
+        .insert({
+          student_name: inquiry.student_name,
+          mobile_number: inquiry.contact_number,
+          email: inquiry.email || null,
+          status: 'ongoing',
+          assigned_counselor_id: inquiry.assigned_counselor_id || null,
+          inquiry_id: inquiry.id,
+          notes: inquiry.notes || null,
+        })
+        .select()
+        .single();
+
+      if (studentError) throw studentError;
+      if (!student?.id) throw new Error('Student was created but no student ID was returned.');
+
+      await supabase.from('student_education').insert({
+        student_id: student.id,
+        current_grade: inquiry.student_grade || null,
+      });
+
+      if (inquiry.product_type) {
+        await supabase.from('student_products').insert({
+          student_id: student.id,
+          product_type: inquiry.product_type as ProductType,
+          status: 'active',
+          ...(inquiry.product_type === 'college_admissions'
+            ? {
+                countries: inquiry.countries || [],
+                colleges: inquiry.colleges || [],
+                programs: inquiry.programs || [],
+                degree_level: inquiry.degree_level || null,
+              }
+            : {}),
+        });
+      }
+
+      await supabase
+        .from('inquiries')
+        .update({ attendance: 'yes', status: 'ongoing' })
+        .eq('id', inquiry.id);
+
+      const { error: logError } = await supabase.from('activity_logs').insert({
+        action: 'Converted inquiry to student',
+        entity_type: 'student',
+        entity_id: student.id,
+        details: { inquiry_id: inquiry.id, student_name: inquiry.student_name },
+      });
+
+      if (logError) {
+        console.warn('Student created, but activity log failed:', logError);
+      }
+
+      await fetchInquiries();
+      navigate(`/students/${student.id}`);
+    } catch (error) {
+      console.error('Error converting inquiry to student:', error);
+      setConversionMessage((error as Error).message || 'Unable to create student from inquiry.');
+    } finally {
+      setConvertingInquiryId(null);
+    }
+  };
+
+  const canDelete = user?.role === 'admin' || user?.role === 'counselor';
   const funnelStats = [
     { label: 'New', value: inquiries.filter((inquiry) => inquiry.status === 'new').length, icon: Users },
     { label: 'Attended', value: inquiries.filter((inquiry) => inquiry.status === 'attended').length, icon: CheckCircle2 },
@@ -89,10 +201,14 @@ export function InquiriesPage() {
     },
     {
       label: 'Stale Leads',
-      value: inquiries.filter((inquiry) => inquiry.status === 'new' && daysBetween(inquiry.inquiry_date) >= 7).length,
+      value: inquiries.filter((inquiry) =>
+        ['new', 'contacted', 'follow_up_required'].includes(inquiry.status) &&
+        daysBetween(inquiry.last_contacted || inquiry.inquiry_date) >= 7
+      ).length,
       icon: Clock,
     },
   ];
+  const activeSources = Array.from(new Set(inquiries.map((item) => item.lead_source).filter(Boolean))) as string[];
 
   if (loading) {
     return <LoadingSpinner />;
@@ -151,14 +267,38 @@ export function InquiriesPage() {
             className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-navy-500 focus:ring-2 focus:ring-navy-500 sm:w-52"
           >
             <option value="all">All Status</option>
-            <option value="new">New</option>
-            <option value="attended">Attended</option>
-            <option value="ongoing">Ongoing</option>
-            <option value="completed">Completed</option>
-            <option value="no_show">No Show</option>
+            {LEAD_STATUSES.map((status) => (
+              <option key={status.value} value={status.value}>{status.label}</option>
+            ))}
+          </select>
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-navy-500 focus:ring-2 focus:ring-navy-500 sm:w-44"
+          >
+            <option value="all">All Priority</option>
+            {LEAD_PRIORITIES.map((priority) => (
+              <option key={priority.value} value={priority.value}>{priority.label}</option>
+            ))}
+          </select>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-navy-500 focus:ring-2 focus:ring-navy-500 sm:w-48"
+          >
+            <option value="all">All Sources</option>
+            {[...new Set([...LEAD_SOURCES, ...activeSources])].map((source) => (
+              <option key={source} value={source}>{source}</option>
+            ))}
           </select>
         </div>
       </div>
+
+      {conversionMessage && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {conversionMessage}
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         <div className="divide-y divide-gray-200 md:hidden">
@@ -172,8 +312,9 @@ export function InquiriesPage() {
                 setEditingInquiry(inquiry);
                 setShowModal(true);
               }}
-              onCreateStudent={() => navigate(`/students?inquiry_id=${encodeURIComponent(inquiry.id)}`)}
+              onCreateStudent={() => handleQuickCreateStudent(inquiry)}
               onDelete={() => handleDelete(inquiry.id)}
+              isConverting={convertingInquiryId === inquiry.id}
             />
           ))}
         </div>
@@ -186,6 +327,7 @@ export function InquiriesPage() {
                 <th className="px-6 py-4 text-left text-sm font-semibold text-navy-900">Contact</th>
                 <th className="px-6 py-4 text-left text-sm font-semibold text-navy-900">Inquiry Date</th>
                 <th className="px-6 py-4 text-left text-sm font-semibold text-navy-900">Attendance</th>
+                <th className="px-6 py-4 text-left text-sm font-semibold text-navy-900">WhatsApp</th>
                 <th className="px-6 py-4 text-left text-sm font-semibold text-navy-900">Status</th>
                 <th className="px-6 py-4 text-left text-sm font-semibold text-navy-900">Counselor</th>
                 <th className="px-6 py-4 text-right text-sm font-semibold text-navy-900">Actions</th>
@@ -202,6 +344,9 @@ export function InquiriesPage() {
                   </td>
                   <td className="px-6 py-4">
                     <p className="text-gray-700">{inquiry.contact_number}</p>
+                    {inquiry.whatsapp_number && (
+                      <p className="text-sm text-gray-500">WA: {inquiry.whatsapp_number}</p>
+                    )}
                   </td>
                   <td className="px-6 py-4">
                     <p className="text-gray-700">{inquiry.inquiry_date}</p>
@@ -217,7 +362,11 @@ export function InquiriesPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4">
+                    <WhatsAppStatusBadge inquiry={inquiry} />
+                  </td>
+                  <td className="px-6 py-4">
                     <StatusBadge status={inquiry.status} />
+                    <PriorityBadge priority={inquiry.priority || 'medium'} />
                   </td>
                   <td className="px-6 py-4">
                     <p className="text-gray-700">{inquiry.assigned_counselor?.name || 'Unassigned'}</p>
@@ -241,15 +390,14 @@ export function InquiriesPage() {
                       >
                         <Edit2 size={18} />
                       </button>
-                      {inquiry.attendance === 'yes' && inquiry.status === 'attended' && (
-                        <button
-                          onClick={() => navigate(`/students?inquiry_id=${encodeURIComponent(inquiry.id)}`)}
-                          className="p-2 text-maroon-600 hover:text-maroon-700 hover:bg-maroon-50 rounded-lg transition-colors"
-                          title="Create Student"
-                        >
-                          <UserPlus size={18} />
-                        </button>
-                      )}
+                      <button
+                        onClick={() => handleQuickCreateStudent(inquiry)}
+                        disabled={convertingInquiryId === inquiry.id}
+                        className="p-2 text-maroon-600 transition-colors hover:bg-maroon-50 hover:text-maroon-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        title={convertingInquiryId === inquiry.id ? 'Creating student...' : 'Create Student'}
+                      >
+                        <UserPlus size={18} />
+                      </button>
                       {canDelete && (
                         <button
                           onClick={() => handleDelete(inquiry.id)}
@@ -313,6 +461,7 @@ function InquiryMobileCard({
   onEdit,
   onCreateStudent,
   onDelete,
+  isConverting,
 }: {
   inquiry: Inquiry;
   canDelete: boolean;
@@ -320,6 +469,7 @@ function InquiryMobileCard({
   onEdit: () => void;
   onCreateStudent: () => void;
   onDelete: () => void;
+  isConverting: boolean;
 }) {
   return (
     <div className="p-4">
@@ -328,6 +478,8 @@ function InquiryMobileCard({
           <p className="truncate font-semibold text-navy-900">{inquiry.student_name}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge status={inquiry.status} />
+            <PriorityBadge priority={inquiry.priority || 'medium'} />
+            <WhatsAppStatusBadge inquiry={inquiry} />
             <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${
               inquiry.attendance === 'yes' ? 'bg-green-100 text-green-700' :
               inquiry.attendance === 'no' ? 'bg-red-100 text-red-700' :
@@ -374,23 +526,21 @@ function InquiryMobileCard({
           <Edit2 size={16} />
           Edit
         </button>
-        {inquiry.attendance === 'yes' && inquiry.status === 'attended' ? (
-          <button
-            onClick={onCreateStudent}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-maroon-100 px-3 py-2 text-sm font-medium text-maroon-700 transition-colors hover:bg-maroon-50"
-          >
-            <UserPlus size={16} />
-            Student
-          </button>
-        ) : (
-          <button
-            onClick={onView}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-          >
-            <Eye size={16} />
-            Details
-          </button>
-        )}
+        <button
+          onClick={onView}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+        >
+          <Eye size={16} />
+          Details
+        </button>
+        <button
+          onClick={onCreateStudent}
+          disabled={isConverting}
+          className="col-span-2 inline-flex items-center justify-center gap-2 rounded-lg border border-maroon-100 px-3 py-2 text-sm font-medium text-maroon-700 transition-colors hover:bg-maroon-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <UserPlus size={16} />
+          {isConverting ? 'Creating...' : 'Create Student'}
+        </button>
         {canDelete && (
           <button
             onClick={onDelete}
@@ -408,6 +558,16 @@ function InquiryMobileCard({
 function StatusBadge({ status }: { status: string }) {
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
     new: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'New' },
+    contacted: { bg: 'bg-sky-100', text: 'text-sky-700', label: 'Contacted' },
+    follow_up_required: { bg: 'bg-amber-100', text: 'text-amber-800', label: 'Follow-up Required' },
+    counselling_scheduled: { bg: 'bg-indigo-100', text: 'text-indigo-700', label: 'Counselling Scheduled' },
+    counselling_completed: { bg: 'bg-teal-100', text: 'text-teal-700', label: 'Counselling Completed' },
+    assessment_pending: { bg: 'bg-yellow-100', text: 'text-yellow-800', label: 'Assessment Pending' },
+    program_selected: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: 'Program Selected' },
+    application_started: { bg: 'bg-cyan-100', text: 'text-cyan-700', label: 'Application Started' },
+    converted: { bg: 'bg-green-100', text: 'text-green-700', label: 'Converted' },
+    lost: { bg: 'bg-gray-100', text: 'text-gray-700', label: 'Lost' },
+    not_interested: { bg: 'bg-stone-100', text: 'text-stone-700', label: 'Not Interested' },
     attended: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Attended' },
     ongoing: { bg: 'bg-orange-100', text: 'text-orange-700', label: 'Ongoing' },
     completed: { bg: 'bg-green-100', text: 'text-green-700', label: 'Completed' },
@@ -417,7 +577,45 @@ function StatusBadge({ status }: { status: string }) {
   const config = statusConfig[status] || statusConfig.new;
   return (
     <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}`}>
-      {config.label}
+      {config.label || getLeadStatusLabel(status)}
+    </span>
+  );
+}
+
+function WhatsAppStatusBadge({ inquiry }: { inquiry: Inquiry }) {
+  const status = inquiry.whatsapp?.status || (inquiry.whatsapp_consent ? 'pending' : 'skipped');
+  const config: Record<string, { bg: string; text: string; label: string }> = {
+    pending: { bg: 'bg-amber-100', text: 'text-amber-800', label: 'WA Pending' },
+    sent: { bg: 'bg-green-100', text: 'text-green-700', label: 'WA Sent' },
+    delivered: { bg: 'bg-sky-100', text: 'text-sky-700', label: 'WA Delivered' },
+    read: { bg: 'bg-violet-100', text: 'text-violet-700', label: 'WA Read' },
+    failed: { bg: 'bg-red-100', text: 'text-red-700', label: 'WA Failed' },
+    skipped: { bg: 'bg-gray-100', text: 'text-gray-600', label: inquiry.whatsapp_consent ? 'WA Skipped' : 'No WA Consent' },
+  };
+  const selected = config[status] || config.skipped;
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${selected.bg} ${selected.text}`}
+      title={inquiry.whatsapp?.error || selected.label}
+    >
+      <MessageCircle size={13} />
+      {selected.label}
+    </span>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: LeadPriority }) {
+  const styles: Record<LeadPriority, string> = {
+    low: 'bg-gray-100 text-gray-600',
+    medium: 'bg-blue-50 text-blue-700',
+    high: 'bg-orange-100 text-orange-700',
+    urgent: 'bg-red-100 text-red-700',
+  };
+
+  return (
+    <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${styles[priority]}`}>
+      {LEAD_PRIORITIES.find((item) => item.value === priority)?.label || 'Medium'}
     </span>
   );
 }
@@ -454,6 +652,20 @@ function InquiryModal({
     student_name: inquiry?.student_name || '',
     contact_number: inquiry?.contact_number || '',
     email: inquiry?.email || '',
+    whatsapp_number: inquiry?.whatsapp_number || '',
+    whatsapp_consent: inquiry?.whatsapp_consent || false,
+    city: inquiry?.city || '',
+    state: inquiry?.state || '',
+    lead_source: inquiry?.lead_source || '',
+    interested_service: inquiry?.interested_service || '',
+    academic_level: inquiry?.academic_level || '',
+    preferred_destination: inquiry?.preferred_destination || '',
+    preferred_course: inquiry?.preferred_course || '',
+    budget_range: inquiry?.budget_range || '',
+    priority: (inquiry?.priority || 'medium') as LeadPriority,
+    last_contacted: inquiry?.last_contacted || '',
+    next_follow_up_date: inquiry?.next_follow_up_date || '',
+    next_follow_up_time: inquiry?.next_follow_up_time || '',
     product_type: inquiry?.product_type || '',
     student_grade: inquiry?.student_grade || '',
     reference_source: (inquiry?.reference_source || '') as '' | 'earlier_student' | 'bni' | 'outside',
@@ -463,7 +675,7 @@ function InquiryModal({
     programs: inquiry?.programs || [],
     degree_level: inquiry?.degree_level || '',
     attendance: inquiry?.attendance || 'pending' as 'yes' | 'no' | 'pending',
-    status: inquiry?.status || 'new' as 'new' | 'attended' | 'ongoing' | 'completed' | 'no_show',
+    status: (inquiry?.status || 'new') as LeadStatus,
     assigned_counselor_id: inquiry?.assigned_counselor_id || '',
     notes: inquiry?.notes || '',
   });
@@ -524,12 +736,51 @@ function InquiryModal({
     setErrorMessage('');
 
     try {
+      if (!isValidPhone(formData.contact_number)) {
+        throw new Error('Enter a valid phone number with 7 to 15 digits.');
+      }
+      if (formData.whatsapp_number && !isValidPhone(formData.whatsapp_number)) {
+        throw new Error('Enter a valid WhatsApp number with 7 to 15 digits.');
+      }
+      if (!isValidEmail(formData.email)) {
+        throw new Error('Enter a valid email address.');
+      }
+      if (formData.next_follow_up_time && !formData.next_follow_up_date) {
+        throw new Error('Select a next follow-up date when adding a follow-up time.');
+      }
+
+      const duplicate = await supabase
+        .from<Inquiry[]>('inquiries')
+        .select('*');
+
+      const normalizedContact = normalizePhone(formData.contact_number);
+      const duplicateLead = (duplicate.data || []).find((item) =>
+        item.id !== inquiry?.id && normalizePhone(item.contact_number || '') === normalizedContact
+      );
+      if (duplicateLead) {
+        throw new Error(`A lead already exists for this phone number: ${duplicateLead.student_name}.`);
+      }
+
       const isCollegeAdmission = formData.product_type === 'college_admissions';
       const data = {
         inquiry_date: formData.inquiry_date,
         student_name: formData.student_name.trim(),
-        contact_number: formData.contact_number.trim(),
+        contact_number: normalizePhone(formData.contact_number),
         email: formData.email.trim() || null,
+        whatsapp_number: formData.whatsapp_number ? normalizePhone(formData.whatsapp_number) : null,
+        whatsapp_consent: formData.whatsapp_consent,
+        city: formData.city.trim() || null,
+        state: formData.state.trim() || null,
+        lead_source: formData.lead_source || null,
+        interested_service: formData.interested_service.trim() || null,
+        academic_level: formData.academic_level || null,
+        preferred_destination: formData.preferred_destination.trim() || null,
+        preferred_course: formData.preferred_course.trim() || null,
+        budget_range: formData.budget_range || null,
+        priority: formData.priority,
+        last_contacted: formData.last_contacted || null,
+        next_follow_up_date: formData.next_follow_up_date || null,
+        next_follow_up_time: formData.next_follow_up_time || null,
         product_type: formData.product_type || null,
         student_grade: formData.student_grade || null,
         reference_source: formData.reference_source || null,
@@ -639,6 +890,28 @@ function InquiryModal({
           </div>
 
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">WhatsApp Number</label>
+            <div className="relative">
+              <Phone className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input
+                type="tel"
+                value={formData.whatsapp_number}
+                onChange={(e) => setFormData({ ...formData, whatsapp_number: e.target.value })}
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+            <label className="mt-3 flex items-start gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={formData.whatsapp_consent}
+                onChange={(e) => setFormData({ ...formData, whatsapp_consent: e.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-navy-900 focus:ring-navy-500"
+              />
+              <span>WhatsApp consent received</span>
+            </label>
+          </div>
+
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
             <div className="relative">
               <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -648,6 +921,81 @@ function InquiryModal({
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
               />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">City</label>
+              <input
+                type="text"
+                value={formData.city}
+                onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">State</label>
+              <input
+                type="text"
+                value={formData.state}
+                onChange={(e) => setFormData({ ...formData, state: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Lead Source</label>
+              <select
+                value={formData.lead_source}
+                onChange={(e) => setFormData({ ...formData, lead_source: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              >
+                <option value="">Select source</option>
+                {LEAD_SOURCES.map((source) => (
+                  <option key={source} value={source}>{source}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Priority</label>
+              <select
+                value={formData.priority}
+                onChange={(e) => setFormData({ ...formData, priority: e.target.value as LeadPriority })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              >
+                {LEAD_PRIORITIES.map((priority) => (
+                  <option key={priority.value} value={priority.value}>{priority.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Interested Service</label>
+              <input
+                type="text"
+                value={formData.interested_service}
+                onChange={(e) => setFormData({ ...formData, interested_service: e.target.value })}
+                placeholder="e.g., overseas admissions, Compass"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Academic Level</label>
+              <select
+                value={formData.academic_level}
+                onChange={(e) => setFormData({ ...formData, academic_level: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              >
+                <option value="">Select level</option>
+                {ACADEMIC_LEVELS.map((level) => (
+                  <option key={level} value={level}>{level}</option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -787,6 +1135,43 @@ function InquiryModal({
             </div>
           )}
 
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Preferred Destination</label>
+              <input
+                type="text"
+                value={formData.preferred_destination}
+                onChange={(e) => setFormData({ ...formData, preferred_destination: e.target.value })}
+                placeholder="Country or city preference"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Preferred Course</label>
+              <input
+                type="text"
+                value={formData.preferred_course}
+                onChange={(e) => setFormData({ ...formData, preferred_course: e.target.value })}
+                placeholder="Course or career interest"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Budget Range</label>
+            <select
+              value={formData.budget_range}
+              onChange={(e) => setFormData({ ...formData, budget_range: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+            >
+              <option value="">Select budget</option>
+              {BUDGET_RANGES.map((range) => (
+                <option key={range} value={range}>{range}</option>
+              ))}
+            </select>
+          </div>
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Student Grade</label>
             <select
@@ -822,13 +1207,12 @@ function InquiryModal({
               <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
               <select
                 value={formData.status}
-                onChange={(e) => setFormData({ ...formData, status: e.target.value as 'new' | 'attended' | 'ongoing' | 'completed' | 'no_show' })}
+                onChange={(e) => setFormData({ ...formData, status: e.target.value as LeadStatus })}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
               >
-                <option value="new">New Inquiry</option>
-                <option value="attended">Attended</option>
-                <option value="ongoing">Ongoing</option>
-                <option value="completed">Completed</option>
+                {LEAD_STATUSES.filter((status) => status.value !== 'no_show').map((status) => (
+                  <option key={status.value} value={status.value}>{status.label}</option>
+                ))}
               </select>
             </div>
           )}
@@ -847,6 +1231,36 @@ function InquiryModal({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:grid-cols-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Last Contacted</label>
+              <input
+                type="date"
+                value={formData.last_contacted}
+                onChange={(e) => setFormData({ ...formData, last_contacted: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Next Follow-up</label>
+              <input
+                type="date"
+                value={formData.next_follow_up_date}
+                onChange={(e) => setFormData({ ...formData, next_follow_up_date: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Time</label>
+              <input
+                type="time"
+                value={formData.next_follow_up_time}
+                onChange={(e) => setFormData({ ...formData, next_follow_up_time: e.target.value })}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-navy-500 focus:border-navy-500"
+              />
+            </div>
           </div>
 
           <div>

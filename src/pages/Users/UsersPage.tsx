@@ -70,7 +70,7 @@ export function UsersPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-navy-100 flex items-center justify-center">
@@ -90,17 +90,6 @@ export function UsersPage() {
             <div>
               <p className="text-sm text-gray-600">Counselors</p>
               <p className="text-2xl font-bold text-navy-900">{users.filter(u => u.role === 'counselor').length}</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center">
-              <UsersIcon className="text-gray-600" size={20} />
-            </div>
-            <div>
-              <p className="text-sm text-gray-600">Staff</p>
-              <p className="text-2xl font-bold text-navy-900">{users.filter(u => u.role === 'staff').length}</p>
             </div>
           </div>
         </div>
@@ -126,7 +115,6 @@ export function UsersPage() {
             <option value="all">All Roles</option>
             <option value="admin">Admin</option>
             <option value="counselor">Counselor</option>
-            <option value="staff">Staff</option>
           </select>
         </div>
       </div>
@@ -158,8 +146,7 @@ export function UsersPage() {
                   <td className="px-6 py-4">
                     <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                       user.role === 'admin' ? 'bg-navy-100 text-navy-700' :
-                      user.role === 'counselor' ? 'bg-blue-100 text-blue-700' :
-                      'bg-gray-100 text-gray-700'
+                      'bg-blue-100 text-blue-700'
                     }`}>
                       {user.role}
                     </span>
@@ -235,7 +222,7 @@ function UserModal({
   const [formData, setFormData] = useState({
     name: user?.name || '',
     email: user?.email || '',
-    role: user?.role || 'staff' as UserRole,
+    role: user?.role || 'counselor' as UserRole,
     is_active: user?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
@@ -334,7 +321,6 @@ function UserModal({
               onChange={(e) => setFormData({ ...formData, role: e.target.value as UserRole })}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-navy-500"
             >
-              <option value="staff">Staff</option>
               <option value="counselor">Counselor</option>
               <option value="admin">Admin</option>
             </select>

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import type { Student, StudentProduct, Meeting, Payment, User, ProductType, Quotation, Reminder } from '../../lib/supabase';
+import type { Inquiry, Student, StudentProduct, Meeting, Payment, User, ProductType, Quotation, Reminder } from '../../lib/supabase';
 import { useAuth } from '../../contexts/useAuth';
 import { PRODUCT_CATALOG, getProductLabel } from '../../lib/products';
 import { ADMISSION_COUNTRIES, ADMISSION_PROGRAMS, DEGREE_LEVELS, getCollegesForCountries } from '../../lib/admissions';
+import { StudentModal } from './StudentsPage';
 import {
   ArrowLeft,
   Edit2,
@@ -82,6 +83,8 @@ export function StudentDetailPage() {
   const [quotations, setQuotations] = useState<Quotation[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [counselors, setCounselors] = useState<User[]>([]);
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [showFeeModal, setShowFeeModal] = useState(false);
   const [savingStatus, setSavingStatus] = useState<Student['status'] | null>(null);
   const [notesDraft, setNotesDraft] = useState('');
@@ -130,13 +133,19 @@ export function StudentDetailPage() {
     setCounselors(data || []);
   }, []);
 
+  const fetchInquiries = useCallback(async () => {
+    const { data } = await supabase.from('inquiries').select('*').order('created_at', { ascending: false });
+    setInquiries(data || []);
+  }, []);
+
   useEffect(() => {
     if (id) {
       fetchStudent();
       fetchRelatedData();
       fetchCounselors();
+      fetchInquiries();
     }
-  }, [fetchCounselors, fetchRelatedData, fetchStudent, id]);
+  }, [fetchCounselors, fetchInquiries, fetchRelatedData, fetchStudent, id]);
 
   const updateStudentStatus = async (status: Student['status']) => {
     if (!id || !student || student.status === status) return;
@@ -226,7 +235,7 @@ export function StudentDetailPage() {
               </div>
             </div>
             <button
-              onClick={() => navigate(`/students?edit_student_id=${encodeURIComponent(id || '')}`)}
+              onClick={() => setShowEditProfileModal(true)}
               className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors"
             >
               <Edit2 size={18} />
@@ -575,6 +584,20 @@ export function StudentDetailPage() {
           onClose={() => setShowFeeModal(false)}
           onSave={() => {
             setShowFeeModal(false);
+            fetchRelatedData();
+          }}
+        />
+      )}
+
+      {showEditProfileModal && (
+        <StudentModal
+          student={student}
+          inquiries={inquiries}
+          counselors={counselors}
+          onClose={() => setShowEditProfileModal(false)}
+          onSave={() => {
+            setShowEditProfileModal(false);
+            fetchStudent();
             fetchRelatedData();
           }}
         />
