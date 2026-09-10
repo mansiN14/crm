@@ -17,6 +17,20 @@ run `firebase deploy --only "hosting,firestore:rules" --project true-axis-crm`.
 Commit and push each release to `origin/main`; a Git push alone does not
 publish Firebase Hosting in this repository.
 
+## Website inquiry integration
+
+Both `https://thetrueaxis.in/contact` and `/book-consultation` submit through
+the website's `/api/create-inquiry` endpoint. It authenticates with the dedicated
+Firebase user `websiteinquiries@thetrueaxis.in` (UID
+`XCr35hPAcySp0KRA4ZyKmSSa3Nf1`). Firestore rules allow that identity to create
+validated website inquiries and activity logs, including their document IDs.
+It has no permission to read, update, or delete CRM inquiries. Do not replace
+this integration permission with public writes or a CRM administrator role.
+
+After changing these rules, verify the website endpoint returns success and
+that both the inquiry and its activity log exist. Use synthetic test details
+and remove the test records afterward.
+
 ## 1. Firebase Project
 
 Create or open a Firebase project, then enable:

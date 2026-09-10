@@ -44,6 +44,57 @@ service cloud.firestore {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['whatsapp']);
     }
 
+    // Dedicated server-side identity used by both public website forms.
+    // It can submit new leads, but cannot read or modify CRM records.
+    function isWebsiteIntegration() {
+      return signedIn()
+        && request.auth.uid == 'XCr35hPAcySp0KRA4ZyKmSSa3Nf1';
+    }
+
+    function validWebsiteInquiry(inquiryId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          'id', 'inquiry_date', 'student_name', 'contact_number', 'email',
+          'product_type', 'student_grade', 'reference_source', 'reference_name',
+          'countries', 'colleges', 'programs', 'degree_level', 'attendance',
+          'status', 'assigned_counselor_id', 'notes', 'created_at', 'updated_at'
+        ])
+        && data.id == inquiryId
+        && data.student_name is string
+        && data.student_name.size() > 0 && data.student_name.size() <= 101
+        && data.contact_number is string
+        && data.contact_number.size() > 0 && data.contact_number.size() <= 20
+        && data.email is string && data.email.size() <= 254
+        && data.notes is string && data.notes.size() <= 500
+        && data.reference_source == 'outside'
+        && data.reference_name == 'Website Consultation Form'
+        && data.status == 'new' && data.attendance == 'pending'
+        && data.assigned_counselor_id == null
+        && data.product_type == null && data.student_grade == null
+        && data.degree_level == null
+        && data.countries == [] && data.colleges == [] && data.programs == []
+        && data.inquiry_date is string
+        && data.created_at is string && data.updated_at is string;
+    }
+
+    function validWebsiteActivityLog(documentId) {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['id', 'action', 'entity_type', 'entity_id', 'details', 'created_at'])
+        && data.id == documentId
+        && data.action == 'Created inquiry from website consultation form'
+        && data.entity_type == 'inquiry'
+        && data.entity_id is string
+        && data.details.keys().hasOnly(['student_name', 'source'])
+        && data.details.source == 'Website Consultation Form'
+        && data.details.student_name is string
+        && data.details.student_name.size() <= 101
+        && data.created_at is string;
+    }
+
+    match /inquiries/{inquiryId} {
+      allow create: if isWebsiteIntegration() && validWebsiteInquiry(inquiryId);
+    }
+
     function ownProfileFieldsOnly() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
         'name',
@@ -62,7 +113,7 @@ service cloud.firestore {
 
     match /activity_logs/{documentId} {
       allow read: if isManager();
-      allow create: if isManager();
+      allow create: if isManager() || (isWebsiteIntegration() && validWebsiteActivityLog(documentId));
       allow update, delete: if false;
     }
 
